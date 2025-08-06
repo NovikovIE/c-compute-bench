@@ -1,0 +1,1 @@
+num_obstacles,total_vertices,seed

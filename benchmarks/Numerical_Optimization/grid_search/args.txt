@@ -1,0 +1,1 @@
+num_dimensions,grid_points_per_dim,seed

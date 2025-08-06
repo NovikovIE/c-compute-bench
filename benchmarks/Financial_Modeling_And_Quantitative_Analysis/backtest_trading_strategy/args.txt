@@ -1,0 +1,1 @@
+num_historical_bars,num_assets,strategy_complexity_score,seed

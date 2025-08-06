@@ -1,0 +1,1 @@
+num_points,ambient_dimension,epsilon_radius,max_simplicial_dimension,seed

@@ -1,0 +1,1 @@
+num_frames,num_particles,num_bins,box_size,seed

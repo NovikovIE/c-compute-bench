@@ -1,0 +1,1 @@
+map_width,map_height,num_sensor_readings,readings_per_scan,seed

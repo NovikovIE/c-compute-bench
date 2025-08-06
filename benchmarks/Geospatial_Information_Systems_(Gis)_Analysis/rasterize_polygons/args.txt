@@ -1,0 +1,1 @@
+num_polygons,avg_vertices_per_polygon,output_grid_width,output_grid_height,seed

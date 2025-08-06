@@ -1,0 +1,319 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+#include <string.h>
+
+// --- MERSENNE TWISTER (DO NOT MODIFY) ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+                fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+                exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+
+// --- BENCHMARK DATA STRUCTURES ---
+
+// A single term in a polynomial, e.g., 5.2 * x_3*x_5
+// `var_mask` is a bitmask where the i-th bit corresponds to variable x_i.
+struct Term {
+    double coeff;
+    uint32_t var_mask;
+    struct Term* next;
+};
+
+// An expression is a linked list of terms (a polynomial).
+typedef struct Term* Expression;
+
+// --- GLOBAL VARIABLES ---
+int R1, C1, C2;
+Expression **matrix1, **matrix2, **result_matrix;
+long long final_term_count; // For stdout result
+
+// --- HELPER FUNCTIONS ---
+
+// Frees the memory for a whole expression (linked list of terms)
+void free_expression(Expression expr) {
+    struct Term* current = expr;
+    while (current != NULL) {
+        struct Term* next = current->next;
+        free(current);
+        current = next;
+    }
+}
+
+// Creates a single new term
+struct Term* create_term(double coeff, uint32_t var_mask) {
+    struct Term* term = (struct Term*)malloc(sizeof(struct Term));
+    if (!term) { perror("malloc failed"); exit(1); }
+    term->coeff = coeff;
+    term->var_mask = var_mask;
+    term->next = NULL;
+    return term;
+}
+
+// Multiplies two expressions, returning a new unsimplified expression
+Expression multiply_expressions(Expression e1, Expression e2) {
+    if (!e1 || !e2) return NULL;
+
+    Expression result_head = NULL;
+    struct Term* result_tail = NULL;
+
+    for (struct Term* t1 = e1; t1 != NULL; t1 = t1->next) {
+        for (struct Term* t2 = e2; t2 != NULL; t2 = t2->next) {
+            double new_coeff = t1->coeff * t2->coeff;
+            uint32_t new_mask = t1->var_mask | t2->var_mask; // (x*y)*(y*z) -> x*y*z
+
+            struct Term* new_term = create_term(new_coeff, new_mask);
+
+            if (result_head == NULL) {
+                result_head = result_tail = new_term;
+            } else {
+                result_tail->next = new_term;
+                result_tail = new_term;
+            }
+        }
+    }
+    return result_head;
+}
+
+// Concatenates two expressions into a new list
+Expression add_expressions(Expression e1, Expression e2) {
+    // The original implementation had a use-after-free bug. When one of the
+    // input expressions was NULL, it would return the other expression directly
+    // instead of a copy. The caller would then free the original expression,
+    // leading to a dangling pointer. This version always creates a new list,
+    // and the loops correctly handle NULL inputs.
+    Expression new_head = NULL, *current_ptr = &new_head;
+    for(struct Term* t = e1; t != NULL; t = t->next) {
+        *current_ptr = create_term(t->coeff, t->var_mask);
+        current_ptr = &((*current_ptr)->next);
+    }
+    for(struct Term* t = e2; t != NULL; t = t->next) {
+        *current_ptr = create_term(t->coeff, t->var_mask);
+        current_ptr = &((*current_ptr)->next);
+    }
+    return new_head;
+}
+
+// Comparison function for qsort based on variable mask
+int term_compare(const void* a, const void* b) {
+    struct Term* termA = *(struct Term**)a;
+    struct Term* termB = *(struct Term**)b;
+    if (termA->var_mask < termB->var_mask) return -1;
+    if (termA->var_mask > termB->var_mask) return 1;
+    return 0;
+}
+
+// Simplifies an expression by combining like terms
+Expression simplify_expression(Expression expr) {
+    if (!expr) return NULL;
+
+    int count = 0;
+    for (struct Term* t = expr; t != NULL; t = t->next) count++;
+    if (count == 0) return NULL;
+
+    struct Term** term_array = (struct Term**)malloc(count * sizeof(struct Term*));
+    if (!term_array) { perror("malloc failed"); exit(1); }
+
+    int i = 0;
+    for (struct Term* t = expr; t != NULL; t = t->next) term_array[i++] = t;
+
+    qsort(term_array, count, sizeof(struct Term*), term_compare);
+
+    Expression new_head = NULL;
+    struct Term* new_tail = NULL;
+
+    i = 0;
+    while (i < count) {
+        uint32_t current_mask = term_array[i]->var_mask;
+        double sum_coeff = 0.0;
+        int j = i;
+        while (j < count && term_array[j]->var_mask == current_mask) {
+            sum_coeff += term_array[j]->coeff;
+            j++;
+        }
+        if (sum_coeff != 0.0) {
+            struct Term* new_term = create_term(sum_coeff, current_mask);
+            if (new_head == NULL) {
+                new_head = new_tail = new_term;
+            } else {
+                new_tail->next = new_term;
+                new_tail = new_term;
+            }
+        }
+        i = j;
+    }
+    free(term_array);
+    return new_head;
+}
+
+// --- BENCHMARK FUNCTIONS ---
+
+void setup_benchmark(int argc, char* argv[]) {
+    if (argc != 5) {
+        fprintf(stderr, "Usage: %s <matrix_dim1_rows> <matrix_dim1_cols> <matrix_dim2_cols> <seed>\n", argv[0]);
+        exit(1);
+    }
+
+    R1 = atoi(argv[1]);
+    C1 = atoi(argv[2]);
+    C2 = atoi(argv[3]);
+    uint32_t seed = (uint32_t)atoi(argv[4]);
+    mt_seed(seed);
+
+    matrix1 = (Expression**)malloc(R1 * sizeof(Expression*));
+    matrix2 = (Expression**)malloc(C1 * sizeof(Expression*));
+    result_matrix = (Expression**)malloc(R1 * sizeof(Expression*));
+    if (!matrix1 || !matrix2 || !result_matrix) { perror("malloc failed"); exit(1); }
+
+    for (int i = 0; i < R1; i++) {
+        matrix1[i] = (Expression*)malloc(C1 * sizeof(Expression));
+        result_matrix[i] = (Expression*)malloc(C2 * sizeof(Expression));
+        if (!matrix1[i] || !result_matrix[i]) { perror("malloc failed"); exit(1); }
+        for(int j=0; j < C2; j++) result_matrix[i][j] = NULL;
+    }
+    for (int i = 0; i < C1; i++) {
+        matrix2[i] = (Expression*)malloc(C2 * sizeof(Expression));
+        if (!matrix2[i]) { perror("malloc failed"); exit(1); }
+    }
+
+    // Populate matrix1
+    for (int i = 0; i < R1; i++) {
+        for (int j = 0; j < C1; j++) {
+            int num_terms = 2 + (mt_rand() % 3); // 2 to 4 terms
+            Expression head = NULL, *current = &head;
+            for (int k = 0; k < num_terms; k++) {
+                double coeff = (double)(mt_rand() % 1000) / 100.0 + 0.1;
+                uint32_t mask = mt_rand();
+                *current = create_term(coeff, mask);
+                current = &((*current)->next);
+            }
+            matrix1[i][j] = simplify_expression(head);
+            free_expression(head);
+        }
+    }
+    // Populate matrix2
+    for (int i = 0; i < C1; i++) {
+        for (int j = 0; j < C2; j++) {
+             int num_terms = 2 + (mt_rand() % 3); // 2 to 4 terms
+            Expression head = NULL, *current = &head;
+            for (int k = 0; k < num_terms; k++) {
+                double coeff = (double)(mt_rand() % 1000) / 100.0 + 0.1;
+                uint32_t mask = mt_rand();
+                *current = create_term(coeff, mask);
+                current = &((*current)->next);
+            }
+            matrix2[i][j] = simplify_expression(head);
+            free_expression(head);
+        }
+    }
+}
+
+void run_computation() {
+    for (int i = 0; i < R1; i++) {
+        for (int j = 0; j < C2; j++) {
+            Expression accumulator = NULL;
+            for (int k = 0; k < C1; k++) {
+                Expression product = multiply_expressions(matrix1[i][k], matrix2[k][j]);
+                
+                Expression unsimplified_sum = add_expressions(accumulator, product);
+
+                free_expression(accumulator);
+                free_expression(product);
+                accumulator = unsimplified_sum;
+            }
+            result_matrix[i][j] = simplify_expression(accumulator);
+            free_expression(accumulator);
+        }
+    }
+
+    final_term_count = 0;
+    for (int i = 0; i < R1; i++) {
+        for (int j = 0; j < C2; j++) {
+            Expression expr = result_matrix[i][j];
+            for (struct Term* t = expr; t != NULL; t = t->next) {
+                final_term_count++;
+            }
+        }
+    }
+}
+
+void cleanup() {
+    for (int i = 0; i < R1; i++) {
+        for (int j = 0; j < C1; j++) {
+            free_expression(matrix1[i][j]);
+        }
+        free(matrix1[i]);
+    }
+    free(matrix1);
+
+    for (int i = 0; i < C1; i++) {
+        for (int j = 0; j < C2; j++) {
+            free_expression(matrix2[i][j]);
+        }
+        free(matrix2[i]);
+    }
+    free(matrix2);
+
+    for (int i = 0; i < R1; i++) {
+        for (int j = 0; j < C2; j++) {
+            free_expression(result_matrix[i][j]);
+        }
+        free(result_matrix[i]);
+    }
+    free(result_matrix);
+}
+
+int main(int argc, char* argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    printf("%lld\n", final_term_count);
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

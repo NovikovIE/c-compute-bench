@@ -1,0 +1,1 @@
+num_particles,num_mc_cycles,box_size,sphere_radius,max_displacement,seed

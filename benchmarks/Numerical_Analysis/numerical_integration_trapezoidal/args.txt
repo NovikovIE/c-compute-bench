@@ -1,0 +1,1 @@
+polynomial_degree,lower_bound,upper_bound,num_intervals,seed

@@ -1,0 +1,1 @@
+num_known_points,output_grid_width,output_grid_height,nugget,sill,range,seed

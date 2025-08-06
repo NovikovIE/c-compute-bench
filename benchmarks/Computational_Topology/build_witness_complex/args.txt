@@ -1,0 +1,1 @@
+num_landmark_points,num_witness_points,max_simplicial_dimension,point_dimension,max_distance,seed

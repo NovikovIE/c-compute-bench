@@ -1,0 +1,1 @@
+events_per_second_stream1,events_per_second_stream2,window_duration_ms,simulation_duration_s,seed

@@ -1,0 +1,1 @@
+num_variables,num_clauses,variable_ordering_heuristic,seed

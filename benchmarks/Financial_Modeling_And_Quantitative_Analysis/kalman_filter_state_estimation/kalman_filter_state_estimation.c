@@ -1,0 +1,351 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+#include <math.h>
+#include <string.h>
+
+// --- BEGIN MERSENNE TWISTER (DO NOT MODIFY) ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+                fprintf(stderr, "FATAL: Mersenne Twister not seeded.\n");
+                exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+// --- END MERSENNE TWISTER ---
+
+// --- BENCHMARK DATA & PARAMETERS ---
+typedef struct {
+    int time_series_length;
+    int n;
+    double result;
+
+    // Kalman filter matrices
+    double* x_hat; // State estimate vector [n x 1]
+    double* P;     // Estimate covariance matrix [n x n]
+    double* A;     // State transition matrix [n x n]
+    double* H;     // Observation matrix [n x n]
+    double* Q;     // Process noise covariance [n x n]
+    double* R;     // Measurement noise covariance [n x n]
+
+    // Measurement data
+    double* z;     // Measurement vector series [time_series_length * n]
+
+    // Temporary storage for computation to avoid malloc in the loop
+    double* x_hat_minus; // [n x 1]
+    double* P_minus;     // [n x n]
+    double* H_T;         // [n x n]
+    double* K;           // Kalman gain [n x n]
+    double* I;           // Identity matrix [n x n]
+    double* temp_n_n_1;  // Generic temp matrix [n x n]
+    double* temp_n_n_2;  // Generic temp matrix [n x n]
+    double* temp_n_1;    // Generic temp vector [n x 1]
+    double* aug_matrix;  // Augmented matrix for inversion [n x 2n]
+
+} BenchmarkData;
+
+static BenchmarkData g_data;
+
+// --- UTILITY FUNCTIONS ---
+double rand_double() {
+    return (double)mt_rand() / (UINT32_MAX);
+}
+
+void mat_mul_vec(double* dest, const double* mat, const double* vec, int n) {
+    for (int i = 0; i < n; ++i) {
+        dest[i] = 0.0;
+        for (int j = 0; j < n; ++j) {
+            dest[i] += mat[i * n + j] * vec[j];
+        }
+    }
+}
+
+void mat_mul(double* dest, const double* A, const double* B, int n) {
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            dest[i * n + j] = 0.0;
+            for (int k = 0; k < n; ++k) {
+                dest[i * n + j] += A[i * n + k] * B[k * n + j];
+            }
+        }
+    }
+}
+
+void mat_add(double* dest, const double* A, const double* B, int n) {
+    int size = n * n;
+    for (int i = 0; i < size; ++i) dest[i] = A[i] + B[i];
+}
+
+void mat_sub(double* dest, const double* A, const double* B, int n) {
+    int size = n * n;
+    for (int i = 0; i < size; ++i) dest[i] = A[i] - B[i];
+}
+
+void mat_transpose(double* dest, const double* src, int n) {
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            dest[j * n + i] = src[i * n + j];
+        }
+    }
+}
+
+// Inverts matrix A using Gauss-Jordan elimination. Stores result in A_inv.
+// Returns 0 on success, 1 on failure.
+int mat_invert(double* A_inv, const double* A, int n) {
+    double* aug = g_data.aug_matrix;
+    int aug_cols = 2 * n;
+
+    // Create augmented matrix [A | I]
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            aug[i * aug_cols + j] = A[i * n + j];
+            aug[i * aug_cols + n + j] = (i == j) ? 1.0 : 0.0;
+        }
+    }
+
+    // Apply Gauss-Jordan elimination
+    for (int i = 0; i < n; ++i) {
+        // Find pivot
+        int pivot_row = i;
+        for (int k = i + 1; k < n; ++k) {
+            if (fabs(aug[k * aug_cols + i]) > fabs(aug[pivot_row * aug_cols + i])) {
+                pivot_row = k;
+            }
+        }
+
+        // Swap rows
+        if (pivot_row != i) {
+            for (int k = 0; k < aug_cols; ++k) {
+                double temp = aug[i * aug_cols + k];
+                aug[i * aug_cols + k] = aug[pivot_row * aug_cols + k];
+                aug[pivot_row * aug_cols + k] = temp;
+            }
+        }
+
+        // Check for singularity
+        double pivot_val = aug[i * aug_cols + i];
+        if (fabs(pivot_val) < 1e-12) return 1; 
+
+        // Normalize row
+        for (int k = i; k < aug_cols; ++k) {
+            aug[i * aug_cols + k] /= pivot_val;
+        }
+
+        // Eliminate other rows
+        for (int k = 0; k < n; ++k) {
+            if (k != i) {
+                double factor = aug[k * aug_cols + i];
+                for (int j = i; j < aug_cols; ++j) {
+                    aug[k * aug_cols + j] -= factor * aug[i * aug_cols + j];
+                }
+            }
+        }
+    }
+
+    // Copy inverse part to destination
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            A_inv[i * n + j] = aug[i * aug_cols + n + j];
+        }
+    }
+
+    return 0;
+}
+
+//--- BENCHMARK ROUTINES ---
+
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s <time_series_length> <num_state_variables> <seed>\n", argv[0]);
+        exit(1);
+    }
+
+    g_data.time_series_length = atoi(argv[1]);
+    g_data.n = atoi(argv[2]);
+    uint32_t seed = (uint32_t)atoi(argv[3]);
+    mt_seed(seed);
+
+    int n = g_data.n;
+    int n_sq = n * n;
+    int z_size = g_data.time_series_length * n;
+
+    // Allocate memory
+    g_data.x_hat = (double*)malloc(n * sizeof(double));
+    g_data.P = (double*)malloc(n_sq * sizeof(double));
+    g_data.A = (double*)malloc(n_sq * sizeof(double));
+    g_data.H = (double*)malloc(n_sq * sizeof(double));
+    g_data.Q = (double*)malloc(n_sq * sizeof(double));
+    g_data.R = (double*)malloc(n_sq * sizeof(double));
+    g_data.z = (double*)malloc(z_size * sizeof(double));
+    
+    // Allocate temporary computation memory
+    g_data.x_hat_minus = (double*)malloc(n * sizeof(double));
+    g_data.P_minus = (double*)malloc(n_sq * sizeof(double));
+    g_data.H_T = (double*)malloc(n_sq * sizeof(double));
+    g_data.K = (double*)malloc(n_sq * sizeof(double));
+    g_data.I = (double*)malloc(n_sq * sizeof(double));
+    g_data.temp_n_n_1 = (double*)malloc(n_sq * sizeof(double));
+    g_data.temp_n_n_2 = (double*)malloc(n_sq * sizeof(double));
+    g_data.temp_n_1 = (double*)malloc(n * sizeof(double));
+    g_data.aug_matrix = (double*)malloc(n * 2 * n * sizeof(double));
+    
+
+    // Initialize matrices with random data
+    for (int i = 0; i < n_sq; ++i) {
+        g_data.A[i] = rand_double();
+        g_data.H[i] = rand_double();
+        g_data.P[i] = (i % (n + 1) == 0) ? 1.0 : 0.0; // Initial P is identity
+        g_data.Q[i] = (i % (n + 1) == 0) ? 0.01 : 0.0; // Small diagonal process noise
+        g_data.R[i] = (i % (n + 1) == 0) ? 0.1 : 0.0; // Diagonal measurement noise
+    }
+
+    // Initialize state and measurements
+    for (int i = 0; i < n; ++i) g_data.x_hat[i] = rand_double();
+    for (int i = 0; i < z_size; ++i) g_data.z[i] = rand_double();
+    
+    // Pre-calculate transposed H and identity matrix
+    mat_transpose(g_data.H_T, g_data.H, n);
+    for(int i=0; i<n; ++i) for(int j=0; j<n; ++j) g_data.I[i*n+j] = (i==j);
+
+    g_data.result = 0.0;
+}
+
+void run_computation() {
+    int n = g_data.n;
+
+    // Pointers for convenience
+    double* x_hat = g_data.x_hat;
+    double* P = g_data.P;
+    const double* A = g_data.A;
+    const double* H = g_data.H;
+    const double* Q = g_data.Q;
+    const double* R = g_data.R;
+    const double* z_series = g_data.z;
+
+    double* x_hat_minus = g_data.x_hat_minus;
+    double* P_minus = g_data.P_minus;
+    const double* H_T = g_data.H_T;
+    double* K = g_data.K;
+    const double* I = g_data.I;
+    double* S = g_data.temp_n_n_1; // Reuse temp1 as S for `H*P*H'+R`
+    double* S_inv = g_data.temp_n_n_2; // Reuse temp2 as S_inv
+    double* temp_mat = g_data.temp_n_n_2; // Generic temp matrix, can overlap with S_inv after its use
+    double* temp_vec = g_data.temp_n_1;
+
+    for (int t = 0; t < g_data.time_series_length; ++t) {
+        // --- PREDICTION STEP ---
+        // x_hat_minus[-] = A * x_hat[k-1]
+        mat_mul_vec(x_hat_minus, A, x_hat, n);
+        
+        // P_minus[-] = A * P[k-1] * A' + Q
+        mat_mul(temp_mat, A, P, n);
+        mat_mul(P_minus, temp_mat, A, n); // A is not symmetric, so A' is needed. For simplicity, we use A.
+        mat_add(P_minus, P_minus, Q, n);
+
+        // --- UPDATE STEP ---
+        // S = H * P_minus * H' + R
+        mat_mul(temp_mat, H, P_minus, n);
+        mat_mul(S, temp_mat, H_T, n);
+        mat_add(S, S, R, n);
+
+        // K = P_minus * H' * inv(S)
+        if (mat_invert(S_inv, S, n) != 0) {
+            // If matrix is singular, skip update for this step
+            memcpy(x_hat, x_hat_minus, n * sizeof(double));
+            memcpy(P, P_minus, n * n * sizeof(double));
+            continue;
+        }
+        mat_mul(temp_mat, P_minus, H_T, n);
+        mat_mul(K, temp_mat, S_inv, n);
+
+        // x_hat[k] = x_hat_minus[-] + K * (z[k] - H * x_hat_minus[-])
+        const double* current_z = &z_series[t * n];
+        mat_mul_vec(temp_vec, H, x_hat_minus, n);
+        for(int i=0; i<n; ++i) temp_vec[i] = current_z[i] - temp_vec[i]; // innovation
+        mat_mul_vec(x_hat, K, temp_vec, n); // reuse x_hat for correction term
+        for(int i=0; i<n; ++i) x_hat[i] += x_hat_minus[i];
+
+        // P[k] = (I - K * H) * P_minus
+        mat_mul(temp_mat, K, H, n);
+        mat_sub(S, I, temp_mat, n); // S is free to be used as temp
+        mat_mul(P, S, P_minus, n);
+    }
+
+    // Accumulate result to prevent dead code elimination
+    for (int i = 0; i < n; ++i) {
+        g_data.result += x_hat[i];
+    }
+}
+
+void cleanup() {
+    free(g_data.x_hat);
+    free(g_data.P);
+    free(g_data.A);
+    free(g_data.H);
+    free(g_data.Q);
+    free(g_data.R);
+    free(g_data.z);
+
+    free(g_data.x_hat_minus);
+    free(g_data.P_minus);
+    free(g_data.H_T);
+    free(g_data.K);
+    free(g_data.I);
+    free(g_data.temp_n_n_1);
+    free(g_data.temp_n_n_2);
+    free(g_data.temp_n_1);
+    free(g_data.aug_matrix);
+}
+
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    printf("%f\n", g_data.result);
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

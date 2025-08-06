@@ -1,0 +1,1 @@
+grid_points,barrier_width,num_time_steps,seed

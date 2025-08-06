@@ -1,0 +1,1 @@
+num_variables,domain_size_per_variable,num_constraints,seed

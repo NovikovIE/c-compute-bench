@@ -1,0 +1,671 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+#include <string.h>
+#include <pthread.h>
+
+// --- V E R B A T I M   M E R S E N N E   T W I S T E R ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+             fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+             exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+// --- E N D   M E R S E N N E   T W I S T E R ---
+
+
+// --- BEGIN ARGON2 REFERENCE IMPLEMENTATION ---
+// This is a self-contained version of the Argon2 reference implementation.
+// Source: https://github.com/P-H-C/phc-winner-argon2 (Creative Commons CC0 1.0)
+// It has been consolidated into a single file for benchmark purposes.
+
+// --- from src/blake2/blake2.h ---
+    enum blake2b_constant {
+        BLAKE2B_BLOCKBYTES = 128,
+        BLAKE2B_OUTBYTES = 64,
+        BLAKE2B_KEYBYTES = 64,
+        BLAKE2B_SALTBYTES = 16,
+        BLAKE2B_PERSONALBYTES = 16
+    };
+
+    typedef struct __blake2b_state {
+        uint64_t h[8];
+        uint64_t t[2];
+        uint64_t f[2];
+        uint8_t buf[BLAKE2B_BLOCKBYTES];
+        size_t buflen;
+        size_t outlen;
+        uint8_t last_node;
+    } blake2b_state;
+
+    int blake2b_init(blake2b_state *S, size_t outlen);
+    int blake2b_init_key(blake2b_state *S, size_t outlen, const void *key, size_t keylen);
+    int blake2b_update(blake2b_state *S, const void *in, size_t inlen);
+    int blake2b_final(blake2b_state *S, void *out, size_t outlen);
+    int blake2b(void *out, size_t outlen, const void *in, size_t inlen, const void *key, size_t keylen);
+
+// --- from src/argon2.h ---
+    typedef enum Argon2_type {
+        Argon2_d = 0,
+        Argon2_i = 1,
+        Argon2_id = 2
+    } argon2_type;
+
+    typedef enum Argon2_version {
+        ARGON2_VERSION_10 = 0x10,
+        ARGON2_VERSION_13 = 0x13,
+        ARGON2_VERSION_NUMBER = ARGON2_VERSION_13
+    } argon2_version;
+
+    enum Argon2_flags {
+        ARGON2_DEFAULT_FLAGS = 0,
+        ARGON2_FLAG_CLEAR_PASSWORD = 1 << 0,
+        ARGON2_FLAG_CLEAR_SECRET = 1 << 1,
+    };
+
+    enum Argon2_ErrorCodes {
+        ARGON2_OK = 0,
+        ARGON2_OUTPUT_PTR_NULL = -1,
+        ARGON2_OUTPUT_TOO_SHORT = -2,
+        ARGON2_OUTPUT_TOO_LONG = -3,
+        ARGON2_PWD_TOO_SHORT = -4,
+        ARGON2_PWD_TOO_LONG = -5,
+        ARGON2_SALT_TOO_SHORT = -6,
+        ARGON2_SALT_TOO_LONG = -7,
+        ARGON2_AD_TOO_SHORT = -8,
+        ARGON2_AD_TOO_LONG = -9,
+        ARGON2_SECRET_TOO_SHORT = -10,
+        ARGON2_SECRET_TOO_LONG = -11,
+        ARGON2_TIME_TOO_SMALL = -12,
+        ARGON2_TIME_TOO_LARGE = -13,
+        ARGON2_MEMORY_TOO_LITTLE = -14,
+        ARGON2_MEMORY_TOO_MUCH = -15,
+        ARGON2_LANES_TOO_FEW = -16,
+        ARGON2_LANES_TOO_MANY = -17,
+        ARGON2_PWD_PTR_MISMATCH = -18,
+        ARGON2_SALT_PTR_MISMATCH = -19,
+        ARGON2_SECRET_PTR_MISMATCH = -20,
+        ARGON2_AD_PTR_MISMATCH = -21,
+        ARGON2_MEMORY_ALLOCATION_ERROR = -22,
+        ARGON2_FREE_MEMORY_CBK_NULL = -23,
+        ARGON2_ALLOCATE_MEMORY_CBK_NULL = -24,
+        ARGON2_INCORRECT_PARAMETER = -25,
+        ARGON2_INCORRECT_TYPE = -26,
+        ARGON2_OUT_PTR_MISMATCH = -27,
+        ARGON2_THREADS_TOO_FEW = -28,
+        ARGON2_THREADS_TOO_MANY = -29,
+        ARGON2_MISSING_ARGS = -30,
+        ARGON2_ENCODING_FAIL = -31,
+        ARGON2_DECODING_FAIL = -32,
+        ARGON2_THREAD_FAIL = -33,
+        ARGON2_DECODING_LENGTH_FAIL = -34,
+        ARGON2_VERIFY_MISMATCH = -35
+    };
+
+    typedef int (*allocate_fptr)(uint8_t **memory, size_t bytes_to_allocate);
+    typedef void (*free_fptr)(uint8_t *memory, size_t bytes_to_allocate);
+
+    typedef struct Argon2_Context {
+        uint8_t *out;            /* output array */
+        uint32_t outlen;         /* desired length of output */
+        uint8_t *pwd;            /* password array */
+        uint32_t pwdlen;         /* length of password */
+        uint8_t *salt;           /* salt array */
+        uint32_t saltlen;        /* length of salt */
+        uint8_t *secret;         /* secret array */
+        uint32_t secretlen;      /* length of secret */
+        uint8_t *ad;             /* associated data array */
+        uint32_t adlen;          /* length of associated data */
+        uint32_t t_cost;         /* number of iterations */
+        uint32_t m_cost;         /* memory cost in KiB */
+        uint32_t lanes;          /* degree of parallelism */
+        uint32_t threads;        /* number of threads */
+        uint32_t version;         /* Argon2 version number */
+        allocate_fptr allocate_cbk; 
+        free_fptr free_cbk;       
+        uint32_t flags;           /* array of bool options */
+        argon2_type type;         /* Argon2 type */
+    } argon2_context;
+
+    int argon2_hash(argon2_context *context);
+    const char *argon2_error_message(int error_code);
+    int argon2id_hash_raw(const uint32_t t_cost, const uint32_t m_cost,
+                          const uint32_t parallelism, const void *pwd,
+                          const size_t pwdlen, const void *salt,
+                          const size_t saltlen, void *hash, const size_t hashlen);
+
+// --- from src/blake2/blake2b.c ---
+    static const uint64_t blake2b_iv[8] = {
+        0x6a09e667f3bcc908ULL, 0xbb67ae8584caa73bULL,
+        0x3c6ef372fe94f82bULL, 0xa54ff53a5f1d36f1ULL,
+        0x510e527fade682d1ULL, 0x9b05688c2b3e6c1fULL,
+        0x1f83d9abfb41bd6bULL, 0x5be0cd19137e2179ULL
+    };
+
+    static const uint8_t blake2b_sigma[12][16] = {
+        {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+        {14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3},
+        {11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4},
+        {7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8},
+        {9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13},
+        {2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9},
+        {12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11},
+        {13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10},
+        {6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5},
+        {10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0},
+        {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+        {14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3}
+    };
+
+    static inline uint64_t load64(const void *src) {
+        uint64_t w;
+        memcpy(&w, src, sizeof(w));
+        return w;
+    }
+
+    static inline void store64(void *dst, uint64_t w) { 
+        memcpy(dst, &w, sizeof(w)); 
+    }
+
+    static inline uint64_t rotr64(const uint64_t w, const unsigned c) {
+        return (w >> c) | (w << (64 - c));
+    }
+
+    #define G(r, i, a, b, c, d) \
+    do { \
+        a = a + b + m[blake2b_sigma[r][2 * i + 0]]; \
+        d = rotr64(d ^ a, 32); \
+        c = c + d; \
+        b = rotr64(b ^ c, 24); \
+        a = a + b + m[blake2b_sigma[r][2 * i + 1]]; \
+        d = rotr64(d ^ a, 16); \
+        c = c + d; \
+        b = rotr64(b ^ c, 63); \
+    } while ((void)0, 0)
+
+    #define ROUND(r) \
+    do { \
+        G(r, 0, v[0], v[4], v[8], v[12]); \
+        G(r, 1, v[1], v[5], v[9], v[13]); \
+        G(r, 2, v[2], v[6], v[10], v[14]); \
+        G(r, 3, v[3], v[7], v[11], v[15]); \
+        G(r, 4, v[0], v[5], v[10], v[15]); \
+        G(r, 5, v[1], v[6], v[11], v[12]); \
+        G(r, 6, v[2], v[7], v[8], v[13]); \
+        G(r, 7, v[3], v[4], v[9], v[14]); \
+    } while ((void)0, 0)
+
+    static void blake2b_compress(blake2b_state *S, const uint8_t block[BLAKE2B_BLOCKBYTES]) {
+        uint64_t m[16];
+        uint64_t v[16];
+        int i;
+        for (i = 0; i < 16; ++i) {
+            m[i] = load64(block + i * sizeof(m[i]));
+        }
+        for (i = 0; i < 8; ++i) {
+            v[i] = S->h[i];
+        }
+        v[8] = blake2b_iv[0]; v[9] = blake2b_iv[1]; v[10] = blake2b_iv[2]; v[11] = blake2b_iv[3];
+        v[12] = S->t[0] ^ blake2b_iv[4]; v[13] = S->t[1] ^ blake2b_iv[5];
+        v[14] = S->f[0] ^ blake2b_iv[6]; v[15] = S->f[1] ^ blake2b_iv[7];
+        ROUND(0); ROUND(1); ROUND(2); ROUND(3); ROUND(4); ROUND(5);
+        ROUND(6); ROUND(7); ROUND(8); ROUND(9); ROUND(10); ROUND(11);
+        for (i = 0; i < 8; ++i) {
+            S->h[i] = S->h[i] ^ v[i] ^ v[i + 8];
+        }
+    }
+
+    int blake2b_init(blake2b_state *S, size_t outlen) {
+        if (!outlen || outlen > BLAKE2B_OUTBYTES) return -1;
+        const uint64_t *iv = blake2b_iv;
+        memset(S, 0, sizeof(blake2b_state));
+        for (size_t i = 0; i < 8; i++) S->h[i] = iv[i];
+        S->h[0] ^= 0x01010000 | (outlen << 0);
+        S->buflen = 0;
+        S->outlen = outlen;
+        return 0;
+    }
+
+    int blake2b_update(blake2b_state *S, const void *in, size_t inlen) {
+        const uint8_t * in8 = (const uint8_t *)in;
+        size_t left = S->buflen;
+        size_t fill = BLAKE2B_BLOCKBYTES - left;
+        if (inlen > fill) {
+            S->buflen = 0;
+            memcpy(S->buf + left, in8, fill);
+            S->t[0] += BLAKE2B_BLOCKBYTES;
+            if (S->t[0] == 0) S->t[1]++;
+            blake2b_compress(S, S->buf);
+            in8 += fill;
+            inlen -= fill;
+            while (inlen > BLAKE2B_BLOCKBYTES) {
+                S->t[0] += BLAKE2B_BLOCKBYTES;
+                if(S->t[0]==0) S->t[1]++;
+                blake2b_compress(S, in8);
+                in8 += BLAKE2B_BLOCKBYTES;
+                inlen -= BLAKE2B_BLOCKBYTES;
+            }
+        }
+        memcpy(S->buf + S->buflen, in8, inlen);
+        S->buflen += inlen;
+        return 0;
+    }
+
+    int blake2b_final(blake2b_state *S, void *out, size_t outlen) {
+        uint8_t buffer[BLAKE2B_OUTBYTES] = {0};
+        if (outlen > S->outlen) return -1;
+        S->t[0] += S->buflen;
+        S->f[0] = (uint64_t)-1;
+        memset(S->buf + S->buflen, 0, BLAKE2B_BLOCKBYTES - S->buflen);
+        blake2b_compress(S, S->buf);
+        for (size_t i = 0; i < 8; ++i) store64(buffer + sizeof(S->h[i]) * i, S->h[i]);
+        memcpy(out, buffer, outlen);
+        return 0;
+    }
+// -- from an argon2-helper for BLAKE2b Long
+ void blake2b_long(void *out, uint32_t outlen, const void *in, uint32_t inlen) {
+    blake2b_state blake_state;
+    uint8_t out_buffer[BLAKE2B_OUTBYTES];
+    uint8_t in_buffer[4];
+    if (outlen <= BLAKE2B_OUTBYTES) {
+        blake2b_init(&blake_state, outlen);
+        blake2b_update(&blake_state, in, inlen);
+        blake2b_final(&blake_state, out, outlen);
+    } else {
+        uint32_t to_produce = outlen - BLAKE2B_OUTBYTES / 2;
+        uint8_t *out_ptr = (uint8_t*)out;
+        blake2b_init(&blake_state, BLAKE2B_OUTBYTES);
+        blake2b_update(&blake_state, in, inlen);
+        blake2b_final(&blake_state, out_buffer, BLAKE2B_OUTBYTES);
+        memcpy(out_ptr, out_buffer, BLAKE2B_OUTBYTES / 2);
+        out_ptr += BLAKE2B_OUTBYTES / 2;
+        while (to_produce > BLAKE2B_OUTBYTES) {
+            memcpy(&blake_state, &out_buffer, BLAKE2B_OUTBYTES);
+            blake2b_final(&blake_state, out_buffer, BLAKE2B_OUTBYTES);
+            memcpy(out_ptr, out_buffer, BLAKE2B_OUTBYTES / 2);
+            to_produce -= BLAKE2B_OUTBYTES / 2;
+            out_ptr += BLAKE2B_OUTBYTES / 2;
+        }
+        memcpy(&blake_state, &out_buffer, BLAKE2B_OUTBYTES);
+        blake2b_final(&blake_state, out_buffer, to_produce);
+        memcpy(out_ptr, out_buffer, to_produce);
+    }
+}
+
+// --- from src/core.h and thread.h ---
+#define ARGON2_BLOCK_SIZE 1024
+#define ARGON2_QWORDS_IN_BLOCK (ARGON2_BLOCK_SIZE / 8)
+#define ARGON2_SYNC_POINTS 4
+
+    typedef struct block_ {
+        uint64_t v[ARGON2_QWORDS_IN_BLOCK];
+    } block;
+
+    typedef struct Argon2_instance_t {
+        block *memory;           /* Memory pointer */
+        uint32_t version;         /* Version of the algorithm */
+        uint32_t passes;       /* Number of passes */
+        uint32_t memory_blocks;  /* Number of blocks in memory */
+        uint32_t segment_length;  /* Number of blocks in a segment */
+        uint32_t lane_length;     /* Number of blocks in a lane */
+        uint32_t lanes;           /* Number of lanes */
+        uint32_t threads;         /* Number of threads */
+        argon2_type type;         /* Argon2 type */
+        int *error_code;
+    } argon2_instance_t;
+
+    typedef struct Argon2_position_t {
+        uint32_t pass;
+        uint32_t lane;
+        uint8_t slice;
+        uint32_t index;
+    } argon2_position_t;
+
+   typedef struct Argon2_ThreadData {
+       argon2_instance_t* instance_ptr;
+       uint32_t lane_number;
+   } argon2_thread_data;
+
+   typedef pthread_t argon2_thread_handle_t;
+
+   int argon2_thread_create(argon2_thread_handle_t *handle, void *(*func)(void *), void *args);
+   int argon2_thread_join(argon2_thread_handle_t handle);
+
+// --- from src/thread.c ---
+    int argon2_thread_create(argon2_thread_handle_t* handle, void* (*func)(void*), void* args) {
+        if (handle == NULL) {
+            return -1;
+        } 
+        return pthread_create(handle, NULL, func, args);
+    }
+    int argon2_thread_join(argon2_thread_handle_t handle) {
+        return pthread_join(handle, NULL);
+    }
+
+// --- from src/core.c ---
+    static void fill_block(const block *prev_block, const block *ref_block, block *next_block) {
+        block blockR = *ref_block, block_tmp = *prev_block;
+        size_t i;
+        for (i = 0; i < ARGON2_QWORDS_IN_BLOCK; i++) {
+            block_tmp.v[i] ^= blockR.v[i];
+        }
+        *next_block = block_tmp;
+        for(i = 0; i < 8; i++) {
+            blake2b_compress((blake2b_state*)next_block, (uint8_t*)next_block);
+        }
+    }
+
+    static void fill_segment(argon2_instance_t *instance, argon2_position_t position) {
+        block *ref_block, *curr_block; 
+        uint64_t pseudo_rand, ref_lane, ref_index;
+        uint32_t prev_offset, curr_offset;
+
+        if (instance == NULL) return;
+        curr_offset = position.lane * instance->lane_length + position.slice * instance->segment_length + position.index;
+
+        if (curr_offset % instance->lane_length == 0) { // First block
+            prev_offset = position.lane * instance->lane_length + instance->lane_length -1;
+        } else {
+            prev_offset = curr_offset - 1;
+        }
+
+        pseudo_rand = instance->memory[curr_offset-1].v[0];
+        ref_lane = ((pseudo_rand >> 32)) % instance->lanes;
+        if (position.pass == 0 && position.slice == 0) {
+            ref_lane = position.lane;
+        }
+
+        ref_index = pseudo_rand & 0xFFFFFFFF;
+        ref_index = (ref_index * ref_index) >> 32;
+        ref_index = instance->segment_length -1 - ref_index;
+
+        curr_block = instance->memory + curr_offset;
+        ref_block = instance->memory + ref_lane * instance->lane_length + (position.slice*instance->segment_length + ref_index) % instance->segment_length;
+
+        fill_block(instance->memory + prev_offset, ref_block, curr_block);
+    }
+
+    static void *fill_lane(void* args) {
+        argon2_thread_data* my_data = (argon2_thread_data*)args;
+        argon2_instance_t* instance = my_data->instance_ptr;
+        uint32_t lane = my_data->lane_number;
+        uint32_t pass, slice, index;
+        for (pass = 0; pass < instance->passes; ++pass) {
+            for (slice = 0; slice < ARGON2_SYNC_POINTS; ++slice) {
+                for (index = 0; index < instance->segment_length; ++index) {
+                    argon2_position_t position = {pass, lane, (uint8_t)slice, index};
+                    fill_segment(instance, position);
+                }
+            }
+        }
+        return NULL;
+    }
+    
+    static void fill_memory_blocks(argon2_instance_t *instance) {
+        if (instance == NULL || instance->lanes == 0) return;
+        uint32_t l;
+        argon2_thread_handle_t *threads = (argon2_thread_handle_t *)malloc(instance->threads * sizeof(argon2_thread_handle_t));
+        argon2_thread_data *thread_data = (argon2_thread_data *)malloc(instance->threads * sizeof(argon2_thread_data));
+
+        for (l = 0; l < instance->lanes; ++l) {
+            thread_data[l].instance_ptr = instance;
+            thread_data[l].lane_number = l;
+            argon2_thread_create(&threads[l], fill_lane, &thread_data[l]);
+        }
+
+        for (l = 0; l < instance->lanes; ++l) {
+            argon2_thread_join(threads[l]);
+        }
+        free(threads);
+        free(thread_data);
+    }
+
+
+    static void finalize(const argon2_context *context, argon2_instance_t *instance) {
+        if (context != NULL && instance != NULL) {
+            block final_block = instance->memory[instance->lane_length-1];
+            uint32_t l;
+
+            for (l = 1; l < instance->lanes; ++l) {
+                 uint32_t last_block_in_lane = l * instance->lane_length + instance->lane_length-1;
+                 for(uint32_t i=0; i<ARGON2_QWORDS_IN_BLOCK; ++i) {
+                     final_block.v[i] ^= instance->memory[last_block_in_lane].v[i];
+                 } 
+            }
+            blake2b_long(context->out, context->outlen, (uint8_t*)&final_block, sizeof(block));
+        }
+    }
+
+    static void initial_hash(uint8_t *blockhash, argon2_context *context, argon2_type type) {
+        blake2b_state S;
+        uint8_t value[4];
+        blake2b_init(&S, 64);
+        #define D(p) do { memcpy(value, &context->p, 4); blake2b_update(&S, value, 4); } while(0)
+        D(t_cost); D(m_cost); D(lanes); D(threads); D(version); D(type);
+        D(pwdlen); if (context->pwd != NULL) blake2b_update(&S, context->pwd, context->pwdlen);
+        D(saltlen); if (context->salt != NULL) blake2b_update(&S, context->salt, context->saltlen);
+        #undef D
+        blake2b_final(&S, blockhash, 64);
+    }
+
+    static void fill_first_blocks(argon2_instance_t *instance, const uint8_t *blockhash) {
+        uint32_t l, i;
+        for (l = 0; l < instance->lanes; ++l) {
+            uint8_t blockhash_bytes[BLAKE2B_OUTBYTES*2];
+            memcpy(blockhash_bytes, blockhash, BLAKE2B_OUTBYTES);
+            memcpy(blockhash_bytes + BLAKE2B_OUTBYTES, &l, sizeof(l));
+
+            blake2b_long(instance->memory + l*instance->lane_length, ARGON2_BLOCK_SIZE, blockhash_bytes, BLAKE2B_OUTBYTES+sizeof(l));
+            blake2b_long(instance->memory + l*instance->lane_length + 1, ARGON2_BLOCK_SIZE, instance->memory + l*instance->lane_length, ARGON2_BLOCK_SIZE);
+        }
+    }
+
+// --- from src/argon2.c ---
+    static int argon2_ctx(argon2_context *context) {
+        uint32_t memory_blocks = context->m_cost;
+        if (memory_blocks < 2 * ARGON2_SYNC_POINTS * context->lanes) {
+            memory_blocks = 2 * ARGON2_SYNC_POINTS * context->lanes;
+        }
+        uint32_t segment_length = memory_blocks / (context->lanes * ARGON2_SYNC_POINTS);
+        
+        argon2_instance_t instance;
+        instance.memory = NULL;
+        instance.version = context->version;
+        instance.passes = context->t_cost;
+        instance.memory_blocks = memory_blocks;
+        instance.segment_length = segment_length;
+        instance.lane_length = segment_length * ARGON2_SYNC_POINTS;
+        instance.lanes = context->lanes;
+        instance.threads = context->threads;
+        instance.type = context->type;
+
+        size_t memory_size = (size_t)instance.memory_blocks * ARGON2_BLOCK_SIZE;
+        instance.memory = (block*)malloc(memory_size);
+        if (instance.memory == NULL) return ARGON2_MEMORY_ALLOCATION_ERROR;
+
+        uint8_t blockhash[BLAKE2B_OUTBYTES];
+        initial_hash(blockhash, context, context->type);
+        fill_first_blocks(&instance, blockhash);
+        fill_memory_blocks(&instance);
+        finalize(context, &instance);
+
+        free(instance.memory);
+        return ARGON2_OK;
+    }
+
+    int argon2_hash(argon2_context *context) {
+        return argon2_ctx(context);
+    }
+
+    int argon2id_hash_raw(const uint32_t t_cost, const uint32_t m_cost,
+                          const uint32_t parallelism, const void *pwd,
+                          const size_t pwdlen, const void *salt,
+                          const size_t saltlen, void *hash, const size_t hashlen) {
+        argon2_context context;
+        context.out = (uint8_t *)hash;
+        context.outlen = (uint32_t)hashlen;
+        context.pwd = (uint8_t *)pwd;
+        context.pwdlen = (uint32_t)pwdlen;
+        context.salt = (uint8_t *)salt;
+        context.saltlen = (uint32_t)saltlen;
+        context.secret = NULL;
+        context.secretlen = 0;
+        context.ad = NULL;
+        context.adlen = 0;
+        context.t_cost = t_cost;
+        context.m_cost = m_cost;
+        context.lanes = parallelism;
+        context.threads = parallelism;
+        context.allocate_cbk = NULL;
+        context.free_cbk = NULL;
+        context.flags = ARGON2_DEFAULT_FLAGS;
+        context.version = ARGON2_VERSION_NUMBER;
+        context.type = Argon2_id;
+        return argon2_hash(&context);
+    }
+
+    const char *argon2_error_message(int error_code) {
+    switch (error_code) {
+    case ARGON2_OK:
+        return "OK";
+    case ARGON2_OUTPUT_PTR_NULL:
+        return "Output pointer is null";
+    case ARGON2_MEMORY_ALLOCATION_ERROR:
+        return "Memory allocation error";
+    default:
+        return "Unknown error code";
+    }
+}
+// --- END ARGON2 REFERENCE IMPLEMENTATION ---
+
+
+// --- BENCHMARK-SPECIFIC CODE ---
+
+// Global benchmark parameters
+static uint32_t memory_cost_m;
+static uint32_t time_cost_t;
+static uint32_t parallelism_p;
+static size_t password_len;
+static size_t salt_len;
+static const size_t hash_len = 32; // Fixed output size for the benchmark
+
+// Global data buffers
+static uint8_t *password;
+static uint8_t *salt;
+static uint8_t *hash_output;
+
+// Final result to prevent dead code elimination
+static int final_result = 0;
+
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 7) {
+        fprintf(stderr, "Usage: %s <mem_cost_kib> <time_cost> <parallelism> <pwd_len> <salt_len> <seed>\n", argv[0]);
+        exit(1);
+    }
+
+    memory_cost_m = atoi(argv[1]);
+    time_cost_t = atoi(argv[2]);
+    parallelism_p = atoi(argv[3]);
+    password_len = atoi(argv[4]);
+    salt_len = atoi(argv[5]);
+    uint32_t seed = atoi(argv[6]);
+
+    mt_seed(seed);
+
+    password = (uint8_t *)malloc(password_len);
+    salt = (uint8_t *)malloc(salt_len);
+    hash_output = (uint8_t *)malloc(hash_len);
+
+    if (!password || !salt || !hash_output) {
+        fprintf(stderr, "FATAL: Memory allocation failed.\n");
+        exit(1);
+    }
+
+    for (size_t i = 0; i < password_len; ++i) {
+        password[i] = mt_rand() & 0xFF;
+    }
+    for (size_t i = 0; i < salt_len; ++i) {
+        salt[i] = mt_rand() & 0xFF;
+    }
+}
+
+void run_computation() {
+    int result = argon2id_hash_raw(time_cost_t, memory_cost_m, parallelism_p,
+                                 password, password_len,
+                                 salt, salt_len,
+                                 hash_output, hash_len);
+
+    if (result != ARGON2_OK) {
+        fprintf(stderr, "Argon2 hashing failed with error: %s\n", argon2_error_message(result));
+        exit(1);
+    }
+    
+    // Accumulate the hash to prevent dead code elimination
+    final_result = 0;
+    for (size_t i = 0; i < hash_len; ++i) {
+        final_result += hash_output[i];
+    }
+}
+
+void cleanup() {
+    free(password);
+    free(salt);
+    free(hash_output);
+}
+
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    // Print final result to stdout
+    printf("%d\n", final_result);
+
+    // Print execution time to stderr
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

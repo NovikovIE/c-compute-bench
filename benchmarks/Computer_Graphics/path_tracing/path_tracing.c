@@ -1,0 +1,271 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <stdint.h>
+#include <math.h>
+
+// --- MERSENNE TWISTER (DO NOT MODIFY) ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+             fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+             exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+// --- END MERSENNE TWISTER ---
+
+// --- BENCHMARK IMPLEMENTATION ---
+
+// Utility function for random double in [0, 1)
+double rand_double() {
+    return (double)mt_rand() / (double)(UINT32_MAX);
+}
+
+// Vector structure
+typedef struct {
+    double x, y, z;
+} Vec3;
+
+// Sphere object structure
+typedef struct {
+    Vec3 center;
+    double radius;
+    Vec3 color;
+    Vec3 emission;
+} Sphere;
+
+// Ray structure
+typedef struct {
+    Vec3 origin;
+    Vec3 direction;
+} Ray;
+
+// Global benchmark data
+struct {
+    int image_width;
+    int image_height;
+    int num_objects;
+    int samples_per_pixel;
+    int max_bounces;
+
+    Sphere* scene;
+    Vec3* image_buffer;
+    uint32_t final_checksum;
+} g_data;
+
+// Vector operations
+static inline Vec3 vec3_add(Vec3 a, Vec3 b) { return (Vec3){a.x + b.x, a.y + b.y, a.z + b.z}; }
+static inline Vec3 vec3_sub(Vec3 a, Vec3 b) { return (Vec3){a.x - b.x, a.y - b.y, a.z - b.z}; }
+static inline Vec3 vec3_mul(Vec3 a, Vec3 b) { return (Vec3){a.x * b.x, a.y * b.y, a.z * b.z}; }
+static inline Vec3 vec3_muls(Vec3 a, double s) { return (Vec3){a.x * s, a.y * s, a.z * s}; }
+static inline double vec3_dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+static inline Vec3 vec3_cross(Vec3 a, Vec3 b) {
+    return (Vec3){a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+static inline Vec3 vec3_normalize(Vec3 v) {
+    double mag = sqrt(vec3_dot(v, v));
+    if (mag > 1e-9) return vec3_muls(v, 1.0 / mag);
+    return v;
+}
+
+// Ray-sphere intersection test
+int intersect(const Ray* r, int* hit_id, double* t_out) {
+    double min_dist = 1e20;
+    int id = -1;
+    for (int i = 0; i < g_data.num_objects; ++i) {
+        Vec3 op = vec3_sub(g_data.scene[i].center, r->origin);
+        double b = vec3_dot(op, r->direction);
+        double det = b * b - vec3_dot(op, op) + g_data.scene[i].radius * g_data.scene[i].radius;
+        if (det < 0) continue;
+        det = sqrt(det);
+        double t = b - det;
+        if (t > 1e-4 && t < min_dist) {
+            min_dist = t;
+            id = i;
+        }
+    }
+    if (id != -1) {
+        *t_out = min_dist;
+        *hit_id = id;
+    }
+    return id != -1;
+}
+
+// Main path tracing function (iterative)
+Vec3 trace(Ray r) {
+    Vec3 final_color = {0, 0, 0};
+    Vec3 path_throughput = {1, 1, 1};
+
+    for (int bounce = 0; bounce < g_data.max_bounces; ++bounce) {
+        int hit_id = -1;
+        double t = 0;
+
+        if (!intersect(&r, &hit_id, &t)) {
+            break; // Hit background (black)
+        }
+
+        const Sphere* obj = &g_data.scene[hit_id];
+        Vec3 hit_point = vec3_add(r.origin, vec3_muls(r.direction, t));
+        Vec3 normal = vec3_normalize(vec3_sub(hit_point, obj->center));
+
+        // Add emission
+        final_color = vec3_add(final_color, vec3_mul(path_throughput, obj->emission));
+
+        // Diffuse reflection (Lambertian)
+        path_throughput = vec3_mul(path_throughput, obj->color);
+
+        // Create random reflection direction
+        double r1 = 2.0 * M_PI * rand_double();
+        double r2 = rand_double();
+        double r2s = sqrt(r2);
+        Vec3 w = normal;
+        Vec3 u = vec3_normalize(vec3_cross(fabs(w.x) > 0.1 ? (Vec3){0, 1, 0} : (Vec3){1, 0, 0}, w));
+        Vec3 v = vec3_cross(w, u);
+        Vec3 new_dir = vec3_normalize(vec3_add(vec3_muls(u, cos(r1) * r2s), vec3_add(vec3_muls(v, sin(r1) * r2s), vec3_muls(w, sqrt(1.0 - r2)))));
+
+        r.origin = hit_point;
+        r.direction = new_dir;
+    }
+
+    return final_color;
+}
+
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 7) {
+        fprintf(stderr, "Usage: %s <width> <height> <num_objects> <samples> <bounces> <seed>\n", argv[0]);
+        exit(1);
+    }
+
+    g_data.image_width = atoi(argv[1]);
+    g_data.image_height = atoi(argv[2]);
+    g_data.num_objects = atoi(argv[3]);
+    g_data.samples_per_pixel = atoi(argv[4]);
+    g_data.max_bounces = atoi(argv[5]);
+    uint32_t seed = (uint32_t)strtoul(argv[6], NULL, 10);
+    
+    mt_seed(seed);
+
+    g_data.scene = (Sphere*)malloc(g_data.num_objects * sizeof(Sphere));
+    g_data.image_buffer = (Vec3*)malloc(g_data.image_width * g_data.image_height * sizeof(Vec3));
+
+    if (!g_data.scene || !g_data.image_buffer) {
+        fprintf(stderr, "FATAL: Memory allocation failed.\n");
+        exit(1);
+    }
+
+    // Create a Cornell-box like scene
+    // Ground sphere
+    g_data.scene[0] = (Sphere){{50, -10000, 81.6}, 10000, {0.75, 0.75, 0.75}, {0,0,0}};
+    // Light source
+    g_data.scene[1] = (Sphere){{50, 681.33, 81.6}, 600, {0,0,0}, {12,12,12}};
+    // Other spheres
+    for (int i = 2; i < g_data.num_objects; ++i) {
+        g_data.scene[i] = (Sphere) {
+            .center = {rand_double() * 100, rand_double() * 80, rand_double() * 160},
+            .radius = rand_double() * 10 + 5,
+            .color = {rand_double() * 0.8 + 0.1, rand_double() * 0.8 + 0.1, rand_double() * 0.8 + 0.1},
+            .emission = {0,0,0}
+        };
+    }
+    g_data.final_checksum = 0;
+}
+
+void run_computation() {
+    Vec3 camera_origin = {50, 52, 295.6};
+    Vec3 camera_direction = vec3_normalize((Vec3){0, -0.042612, -1});
+
+    double aspect = (double)g_data.image_width / g_data.image_height;
+    Vec3 cx = {g_data.image_width * 0.5135 / g_data.image_height, 0, 0};
+    Vec3 cy = vec3_muls(vec3_normalize(vec3_cross(cx, camera_direction)), 0.5135);
+
+    for (int y = 0; y < g_data.image_height; ++y) {
+        for (int x = 0; x < g_data.image_width; ++x) {
+            int pixel_index = y * g_data.image_width + x;
+            g_data.image_buffer[pixel_index] = (Vec3){0, 0, 0};
+            for (int s = 0; s < g_data.samples_per_pixel; ++s) {
+                double dx = rand_double() - 0.5;
+                double dy = rand_double() - 0.5;
+                double fx = (double)x / g_data.image_width - 0.5;
+                double fy = (double)y / g_data.image_height - 0.5;
+
+                Vec3 dir = vec3_add(
+                    vec3_muls(cx, (fx + dx / 2.0)),
+                    vec3_add(vec3_muls(cy, (fy + dy / 2.0)), camera_direction)
+                );
+
+                Ray r = {vec3_add(camera_origin, vec3_muls(dir, 140)), vec3_normalize(dir)};
+                g_data.image_buffer[pixel_index] = vec3_add(g_data.image_buffer[pixel_index], trace(r));
+            }
+            g_data.image_buffer[pixel_index] = vec3_muls(g_data.image_buffer[pixel_index], 1.0 / g_data.samples_per_pixel);
+        }
+    }
+
+    // Calculate a checksum to prevent dead code elimination
+    uint32_t checksum = 0;
+    for (int i = 0; i < g_data.image_width * g_data.image_height; ++i) {
+        Vec3 p = g_data.image_buffer[i];
+        // Clamp and convert to 8-bit integer values
+        uint32_t r = (uint32_t)(fmin(1.0, fmax(0.0, p.x)) * 255.0);
+        uint32_t g = (uint32_t)(fmin(1.0, fmax(0.0, p.y)) * 255.0);
+        uint32_t b = (uint32_t)(fmin(1.0, fmax(0.0, p.z)) * 255.0);
+        checksum += (r * 3 + g * 5 + b * 7); 
+    }
+    g_data.final_checksum = checksum;
+}
+
+void cleanup() {
+    free(g_data.scene);
+    free(g_data.image_buffer);
+}
+
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    printf("%u\n", g_data.final_checksum);
+    fprintf(stderr, "%.6f", time_taken);
+
+    cleanup();
+
+    return 0;
+}

@@ -2,25 +2,26 @@ all_benchmarks = {
     "Numerical Analysis": (
         "Algorithms for approximating solutions to problems in continuous mathematics, fundamental to scientific computing and engineering. This includes solving systems of equations, interpolation, integration, and differential equations.",
         {
-            "linear_solver": ["matrix_size", "vector_size"],
+            "linear_solver": ["matrix_size"],
             "lu_decomposition": ["matrix_size"],
             "qr_factorization": ["matrix_size"],
-            "eigenvalue_solver": ["matrix_size"],
+            "eigenvalue_solver": ["matrix_size", "num_iterations"],
             "singular_value_decomposition": ["matrix_height", "matrix_width"],
             "fast_fourier_transform": ["array_size", "dimensions"],
             "inverse_fast_fourier_transform": ["array_size", "dimensions"],
-            "convolution": ["first_array_size", "second_array_size"],
             "polynomial_interpolation": ["num_points", "degree"],
-            "cubic_spline_interpolation": ["num_points"],
-            "numerical_integration_trapezoidal": ["function_str", "lower_bound", "upper_bound", "num_intervals"],
+            "cubic_spline_interpolation": ["num_points", "num_interp_points"],
+            "numerical_integration_trapezoidal": ["polynomial_degree", "lower_bound", "upper_bound", "num_intervals"],
             "numerical_integration_simpson": ["function_str", "lower_bound", "upper_bound", "num_intervals"],
-            "romberg_integration": ["function_str", "lower_bound", "upper_bound", "max_steps"],
+            "romberg_integration": ["poly_degree", "lower_bound", "upper_bound", "max_steps"],
             "gaussian_quadrature": ["function_str", "lower_bound", "upper_bound", "num_points"],
-            "root_finding_bisection": ["function_str", "lower_bound", "upper_bound", "tolerance"],
-            "root_finding_newton_raphson": ["function_str", "initial_guess", "tolerance"],
-            "ordinary_differential_equation_euler": ["function_str", "initial_y", "start_x", "end_x", "step_size"],
+            "root_finding_bisection": ["poly_degree", "lower_bound", "upper_bound", "tolerance"],
+            "root_finding_newton_raphson": ["function_str", "poly_degree", "initial_guess", "tolerance"],
+            "ordinary_differential_equation_euler": ["function_str", "num_params", "initial_y", "start_x", "end_x", "step_size"],
             "ordinary_differential_equation_runge_kutta": ["function_str", "initial_y", "start_x", "end_x", "step_size"],
-            "partial_differential_equation_finite_difference": ["grid_size_x", "grid_size_y", "time_steps"]
+            "partial_differential_equation_finite_difference": ["grid_size_x", "grid_size_y", "time_steps"],
+            "jacobi_iteration": ["matrix_size", "max_iterations"],
+            "gauss_seidel_iteration": ["matrix_size", "max_iterations"]
         }
     ),
     "Machine Learning": (
@@ -34,15 +35,14 @@ all_benchmarks = {
             "naive_bayes_train": ["num_samples", "num_features", "num_classes"],
             "random_forest_train": ["num_samples", "num_features", "num_trees", "max_depth"],
             "mlp_classifier_train": ["num_samples", "num_features", "num_hidden_layers", "hidden_layer_size", "num_epochs"],
-            "mlp_classifier_predict": ["num_samples", "num_features", "num_hidden_layers", "hidden_layer_size"],
-            "linear_regression_sgd": ["num_samples", "num_features", "num_epochs"],
+            "mlp_classifier_predict": ["num_samples", "num_features", "num_hidden_layers", "hidden_layer_size", "num_classes"],
+            "linear_regression_sgd": ["num_samples", "num_features", "num_epochs", "learning_rate"],
             "polynomial_regression": ["num_samples", "num_features", "degree"],
-            "ridge_regression": ["num_samples", "num_features", "num_epochs", "alpha"],
-            "svr_train": ["num_samples", "num_features", "gamma", "cost"],
+            "ridge_regression": ["num_samples", "num_features", "num_epochs", "alpha", "learning_rate"],
+            "svr_train": ["num_samples", "num_features", "gamma", "cost", "max_iter"],
             "k_means_clustering": ["num_points", "num_features", "num_clusters", "max_iterations"],
             "hierarchical_clustering": ["num_points", "num_features"],
             "dbscan_clustering": ["num_points", "num_features", "epsilon", "min_samples"],
-            "gaussian_mixture_model": ["num_points", "num_features", "num_clusters", "max_iterations"],
             "pca": ["num_samples", "num_features", "num_components"],
             "t_sne": ["num_samples", "num_features", "perplexity", "num_iterations"],
             "matrix_multiplication": ["matrix_m_dim", "matrix_k_dim", "matrix_n_dim"],
@@ -54,26 +54,26 @@ all_benchmarks = {
             "lstm_cell_forward_pass": ["batch_size", "input_features", "output_features"],
             "gru_cell_forward_pass": ["batch_size", "input_features", "output_features"],
             "transformer_encoder_layer_forward": ["batch_size", "sequence_length", "embedding_dim", "num_heads"],
-            "backpropagation_feedforward": ["num_samples", "num_features", "num_hidden_layers", "hidden_layer_size"],
+            "backpropagation_feedforward": ["num_samples", "num_features", "num_hidden_layers", "hidden_layer_size", "num_output_neurons", "learning_rate"],
             "adaboost_train": ["num_samples", "num_features", "num_estimators"],
             "gradient_boosting_train": ["num_samples", "num_features", "num_trees", "max_depth", "learning_rate"],
             "collaborative_filtering_als": ["num_users", "num_items", "num_ratings", "num_factors", "num_iterations"],
-            "genetic_algorithm": ["population_size", "num_genes", "num_generations"]
+            "genetic_algorithm": ["population_size", "num_genes", "num_generations", "seed"]
         }
     ),
     "Statistical Modeling": (
         "Computational methods for estimating parameters, testing hypotheses, and making predictions based on statistical principles and data. This includes resampling methods and computationally intensive Bayesian techniques.",
         {
-            "metropolis_hastings_mcmc": ["num_samples", "num_burn_in", "num_parameters"],
+            "metropolis_hastings_mcmc": ["num_samples", "num_burn_in", "num_parameters", "num_data_points"],
             "gibbs_sampling": ["num_samples", "num_burn_in", "num_variables"],
-            "bayesian_linear_regression": ["num_samples", "num_predictors", "mcmc_iterations"],
+            "bayesian_linear_regression": ["num_samples", "num_predictors", "mcmc_iterations", "seed"],
             "variational_inference": ["num_data_points", "num_parameters", "num_iterations"],
             "hamiltonian_monte_carlo": ["num_samples", "num_burn_in", "num_leapfrog_steps", "step_size", "num_parameters"],
             "bootstrap_mean": ["num_data_points", "num_bootstrap_samples"],
             "bootstrap_regression_coeffs": ["num_data_points", "num_predictors", "num_bootstrap_samples"],
             "permutation_test_two_sample": ["sample1_size", "sample2_size", "num_permutations"],
             "jackknife_resampling": ["num_data_points"],
-            "maximum_likelihood_estimation": ["num_data_points", "num_parameters", "max_iterations"],
+            "maximum_likelihood_estimation": ["num_data_points", "num_parameters", "max_iterations", "learning_rate"],
             "expectation_maximization_gmm": ["num_data_points", "num_features", "num_clusters", "max_iterations"],
             "kalman_filter": ["num_time_steps", "num_state_variables", "num_observation_variables"],
             "arima_simulation": ["num_time_steps", "p_order", "d_order", "q_order"],
@@ -83,7 +83,7 @@ all_benchmarks = {
             "loess_smoothing": ["num_data_points", "span"],
             "kaplan_meier_estimator": ["num_subjects", "num_events"],
             "cox_proportional_hazards_fit": ["num_subjects", "num_predictors", "num_iterations"],
-            "chi_squared_test_monte_carlo": ["num_rows", "num_cols", "num_simulations"],
+            "chi_squared_test_monte_carlo": ["num_rows", "num_cols", "num_simulations", "num_swaps_per_simulation"],
             "anova_permutation_test": ["num_groups", "num_samples_per_group", "num_permutations"]
         }
     ),
@@ -100,8 +100,7 @@ all_benchmarks = {
             "enumerate_spanning_trees": ["num_vertices", "num_edges"],
             "knapsack_01_bruteforce": ["num_items", "max_weight"],
             "generate_dyck_paths": ["num_pairs"],
-            "solve_sudoku_bruteforce": ["board_size", "num_prefilled_cells"],
-            "enumerate_cliques": ["num_vertices", "graph_density"],
+            "solve_sudoku_bruteforce": ["board_size", "num_prefilled_cells", "seed"],
             "generate_balanced_parentheses": ["num_pairs"],
             "enumerate_set_covers": ["num_universe_elements", "num_subsets"],
             "traveling_salesperson_bruteforce": ["num_cities"],
@@ -112,16 +111,16 @@ all_benchmarks = {
         "Simulating physical systems governed by the laws of nature, from the scale of atoms (molecular dynamics) to galaxies (N-body simulations), and including fluid dynamics and solid mechanics.",
         {
             "n_body_simulation_brute_force": ["num_bodies", "num_time_steps", "time_delta"],
-            "n_body_simulation_barnes_hut": ["num_bodies", "num_time_steps", "time_delta", "theta_parameter"],
+            "n_body_simulation_barnes_hut": ["num_bodies", "num_time_steps", "time_delta", "theta_parameter", "seed"],
             "galaxy_collision_simulation": ["num_stars_galaxy1", "num_stars_galaxy2", "num_time_steps"],
-            "lennard_jones_fluid": ["num_particles", "num_time_steps", "box_size", "cutoff_radius"],
+            "lennard_jones_fluid": ["num_particles", "num_time_steps", "box_size", "cutoff_radius", "time_step"],
             "brownian_motion_simulation": ["num_particles", "num_time_steps"],
             "protein_folding_simplified": ["num_amino_acids", "num_simulation_steps"],
-            "monte_carlo_hard_spheres": ["num_particles", "num_mc_cycles", "box_size"],
+            "monte_carlo_hard_spheres": ["num_particles", "num_mc_cycles", "box_size", "sphere_radius", "max_displacement"],
             "lattice_boltzmann_flow": ["grid_dim_x", "grid_dim_y", "num_time_steps", "reynolds_number"],
             "navier_stokes_solver_2d": ["grid_dim_x", "grid_dim_y", "num_time_steps", "viscosity"],
             "smoothed_particle_hydrodynamics": ["num_particles", "num_time_steps"],
-            "vortex_method_simulation": ["num_vortices", "num_time_steps"],
+            "vortex_method_simulation": ["num_vortices", "num_time_steps", "dt", "delta"],
             "fea_truss_analysis": ["num_nodes", "num_elements"],
             "fea_heat_conduction_2d": ["mesh_size_x", "mesh_size_y", "num_time_steps"],
             "elastic_collision_simulation_2d": ["num_balls", "num_time_steps"],
@@ -137,33 +136,29 @@ all_benchmarks = {
             "percolation_simulation": ["grid_size_x", "grid_size_y", "num_trials"],
             "wave_equation_solver_2d": ["grid_dim_x", "grid_dim_y", "num_time_steps"],
             "acoustic_ray_tracing": ["num_rays", "num_reflections", "room_complexity"],
-            "doppler_effect_simulation": ["num_time_steps", "source_velocity", "observer_velocity"]
+            "doppler_effect_simulation": ["num_sources", "num_time_steps"]
         }
     ),
     "Cryptography": (
         "The practice and study of techniques for secure communication, involving computationally hard problems like integer factorization, discrete logarithms, and brute-forcing cryptographic hashes and ciphers.",
         {
-            "aes_bruteforce": ["key_space_bits_to_search", "ciphertext_hex"],
-            "des_bruteforce": ["key_space_bits_to_search", "ciphertext_hex"],
+            "aes_bruteforce": ["key_space_bits_to_search", "plaintext_size_bytes"],
+            "des_bruteforce": ["key_space_bits_to_search", "seed"],
             "triple_des_bruteforce": ["key_space_bits_to_search", "ciphertext_hex"],
-            "rsa_key_generation": ["key_bit_length"],
             "rsa_encrypt": ["key_bit_length", "data_size_bytes"],
             "rsa_decrypt": ["key_bit_length", "data_size_bytes"],
             "diffie_hellman_key_exchange": ["prime_bit_length"],
             "sha256_proof_of_work": ["difficulty_leading_zeros", "data_block_size"],
             "sha3_proof_of_work": ["difficulty_leading_zeros", "data_block_size"],
-            "blake2b_proof_of_work": ["difficulty_leading_zeros", "data_block_size"],
-            "integer_factorization_trial_division": ["number_bit_length"],
-            "pollards_rho_factorization": ["number_bit_length"],
             "general_number_field_sieve_simulation": ["number_bit_length"],
             "ecc_scalar_multiplication": ["curve_bit_length"],
             "ecdsa_key_generation": ["curve_bit_length"],
-            "ecdsa_sign_message": ["curve_bit_length", "message_size_bytes"],
+            "ecdsa_sign_message": ["curve_bit_length", "hash_size_bytes"],
             "ecdsa_verify_signature": ["curve_bit_length", "message_size_bytes"],
             "pbkdf2_hashing": ["password_length", "salt_length", "iterations"],
             "bcrypt_hashing": ["cost_factor"],
             "scrypt_hashing": ["cpu_memory_cost_n", "block_size_r", "parallelization_p"],
-            "argon2_hashing": ["memory_cost_m", "time_cost_t", "parallelism_p"],
+            "argon2_hashing": ["memory_cost_m", "time_cost_t", "parallelism_p", "password_len", "salt_len"],
             "discrete_logarithm_bruteforce": ["prime_field_bit_length"]
         }
     ),
@@ -173,33 +168,31 @@ all_benchmarks = {
             "needleman_wunsch_global_alignment": ["sequence1_length", "sequence2_length"],
             "smith_waterman_local_alignment": ["sequence1_length", "sequence2_length"],
             "multiple_sequence_alignment_progressive": ["num_sequences", "average_sequence_length"],
-            "blast_like_database_search": ["query_sequence_length", "database_size_in_mb", "word_size"],
             "neighbor_joining_tree_build": ["num_taxa"],
-            "parsimony_tree_heuristic_search": ["num_taxa", "sequence_length"],
+            "parsimony_tree_heuristic_search": ["num_taxa", "sequence_length", "num_iterations"],
             "maximum_likelihood_phylogeny_evaluation": ["num_taxa", "sequence_length", "num_iterations"],
-            "bayesian_phylogenetics_mcmc": ["num_taxa", "sequence_length", "num_mcmc_generations"],
+            "bayesian_phylogenetics_mcmc": ["num_taxa", "sequence_length", "num_mcmc_generations", "seed"],
             "de_bruijn_graph_construction": ["num_reads", "read_length", "kmer_size"],
             "kmer_counting": ["genome_size_mb", "kmer_size"],
-            "short_read_mapping_to_reference": ["num_reads", "read_length", "reference_genome_size_mb"],
             "variant_calling_pileup": ["genome_region_length", "read_depth"],
             "rna_secondary_structure_folding": ["sequence_length"],
             "protein_contact_map_calculation": ["protein_sequence_length"],
             "protein_threading_alignment": ["protein_sequence_length", "num_structural_templates"],
             "molecular_docking_simulation": ["ligand_atoms", "receptor_atoms", "search_space_size"],
-            "motif_finding_gibbs_sampling": ["num_sequences", "average_sequence_length", "motif_length", "num_iterations"],
+            "motif_finding_gibbs_sampling": ["num_sequences", "average_sequence_length", "motif_length", "num_iterations", "seed"],
             "tandem_repeat_finding": ["sequence_length", "max_pattern_size"],
             "coalescent_simulation": ["sample_size", "num_loci", "num_generations"],
-            "genotype_phasing": ["num_individuals", "num_snps"]
+            "genotype_phasing": ["num_individuals", "num_snps", "num_iterations"]
         }
     ),
     "Computer Graphics": (
         "Algorithms for generating and manipulating visual images. This theme focuses on rendering techniques like ray tracing, rasterization pipelines, and physics simulations used to create realistic visual effects.",
         {
             "ray_tracing_simple": ["image_width", "image_height", "num_objects", "max_recursion_depth"],
-            "path_tracing": ["image_width", "image_height", "num_objects", "samples_per_pixel", "max_bounces"],
+            "path_tracing": ["image_width", "image_height", "num_objects", "samples_per_pixel", "max_bounces", "prng_seed"],
             "ambient_occlusion_ray_casting": ["image_width", "image_height", "num_samples_per_point", "num_objects"],
             "photon_mapping": ["image_width", "image_height", "num_photons_to_emit", "k_nearest_neighbors"],
-            "bidirectional_path_tracing": ["image_width", "image_height", "num_objects", "samples_per_pixel", "max_path_length"],
+            "bidirectional_path_tracing": ["image_width", "image_height", "num_objects", "samples_per_pixel", "max_path_length", "rng_seed"],
             "rasterize_triangles": ["num_triangles", "viewport_width", "viewport_height"],
             "fragment_shader_mandelbrot": ["image_width", "image_height", "max_iterations"],
             "vertex_shader_skinning": ["num_vertices", "num_bones"],
@@ -207,17 +200,17 @@ all_benchmarks = {
             "volume_ray_marching": ["volume_width", "volume_height", "volume_depth", "samples_per_ray"],
             "fluid_simulation_grid_2d": ["grid_width", "grid_height", "num_simulation_steps"],
             "fluid_simulation_grid_3d": ["grid_width", "grid_height", "grid_depth", "num_simulation_steps"],
-            "smoke_simulation_particles": ["num_particles", "num_simulation_steps"],
+            "smoke_simulation_particles": ["num_particles", "num_simulation_steps", "num_influencers"],
             "mesh_subdivision_loop": ["num_vertices", "num_subdivision_levels"],
             "mesh_simplification_qem": ["initial_vertex_count", "target_vertex_count"],
             "marching_cubes_isosurface_extraction": ["grid_dim_x", "grid_dim_y", "grid_dim_z"],
             "perlin_noise_generation_3d": ["texture_width", "texture_height", "texture_depth", "num_octaves"],
-            "fractal_landscape_generation": ["grid_size", "num_recursion_levels"],
+            "fractal_landscape_generation": ["num_recursion_levels", "roughness", "seed"],
             "cloth_simulation_mass_spring": ["grid_width", "grid_height", "num_simulation_steps", "constraint_iterations"],
             "rigid_body_physics_simulation": ["num_objects", "num_simulation_steps", "solver_iterations"],
-            "soft_body_physics_simulation": ["num_nodes", "num_simulation_steps", "solver_iterations"],
+            "soft_body_physics_simulation": ["num_nodes", "num_springs", "num_simulation_steps", "solver_iterations"],
             "gaussian_blur_filter": ["image_width", "image_height", "kernel_radius"],
-            "bloom_effect_processing": ["image_width", "image_height", "blur_passes"]
+            "bloom_effect_processing": ["image_width", "image_height", "blur_passes", "brightness_threshold"]
         }
     ),
     "Operations Research": (
@@ -232,18 +225,16 @@ all_benchmarks = {
             "quadratic_assignment_problem_bruteforce": ["num_facilities"],
             "bin_packing_first_fit_decreasing": ["num_items", "bin_capacity"],
             "set_cover_problem_exact": ["num_universe_elements", "num_subsets"],
-            "knapsack_01_dynamic_programming": ["num_items", "capacity"],
-            "max_flow_edmonds_karp": ["num_vertices", "num_edges"],
+            "knapsack_01_dynamic_programming": ["num_items", "capacity", "seed"],
             "min_cost_max_flow": ["num_nodes", "num_arcs"],
             "assignment_problem_hungarian_method": ["num_agents"],
             "inventory_management_dynamic_programming": ["num_time_periods", "max_inventory_level"],
             "resource_allocation_dynamic_programming": ["num_projects", "total_budget"],
-            "simulated_annealing_for_tsp": ["num_cities", "num_iterations", "initial_temperature"],
-            "tabu_search_for_vrp": ["num_customers", "num_vehicles", "num_iterations", "tabu_list_size"],
+            "simulated_annealing_for_tsp": ["num_cities", "num_iterations", "initial_temperature", "seed"],
+            "tabu_search_for_vrp": ["num_customers", "num_vehicles", "num_iterations", "tabu_list_size", "seed"],
             "ant_colony_optimization_for_tsp": ["num_ants", "num_cities", "num_iterations", "pheromone_evaporation_rate"],
-            "genetic_algorithm_for_scheduling": ["population_size", "num_generations", "num_jobs", "num_machines"],
-            "markov_decision_process_value_iteration": ["num_states", "num_actions", "horizon"],
-            "queuing_theory_simulation": ["num_servers", "arrival_rate", "service_rate", "simulation_duration"]
+            "markov_decision_process_value_iteration": ["num_states", "num_actions", "horizon", "discount_factor"],
+            "queuing_theory_simulation": ["num_servers", "arrival_rate", "service_rate", "num_events"]
         }
     ),
     "Graph Algorithms": (
@@ -270,14 +261,17 @@ all_benchmarks = {
             "blossom_algorithm_general_matching": ["num_vertices", "num_edges"],
             "detect_cycle_directed_graph": ["num_vertices", "num_edges"],
             "detect_cycle_undirected_graph": ["num_vertices", "num_edges"],
-            "find_eulerian_circuit": ["num_vertices", "num_edges"],
+            "find_eulerian_circuit": ["num_vertices", "num_extra_triangles"],
             "topological_sort_kahn": ["num_vertices", "num_edges"],
             "topological_sort_dfs": ["num_vertices", "num_edges"],
             "degree_centrality_calc": ["num_vertices", "num_edges"],
             "closeness_centrality_calc": ["num_vertices", "num_edges"],
             "betweenness_centrality_calc": ["num_vertices", "num_edges"],
             "bron_kerbosch_clique_enum": ["num_vertices", "graph_density"],
-            "greedy_graph_coloring": ["num_vertices", "num_edges"]
+            "greedy_graph_coloring": ["num_vertices", "num_edges"],
+            "topological_sort_iterative": ["num_vertices", "num_edges"],
+            "find_shortest_cycle": ["num_vertices", "num_edges"],
+            "graph_diameter_calc": ["num_vertices", "num_edges"]
         }
     ),
     "String Processing and Text Algorithms": (
@@ -298,9 +292,7 @@ all_benchmarks = {
             "build_suffix_automaton": ["text_length"],
             "build_trie_from_wordlist": ["num_words", "average_word_length"],
             "lempel_ziv_77_compress": ["input_data_size_kb", "sliding_window_size"],
-            "burrows_wheeler_transform": ["block_size_kb"],
             "huffman_coding_build_tree": ["input_data_size_kb", "alphabet_size"],
-            "run_length_encoding": ["input_data_size_kb"],
             "manacher_find_all_palindromes": ["text_length"],
             "z_algorithm_pattern_search": ["text_length", "pattern_length"],
             "sort_large_string_array_radix": ["num_strings", "max_string_length"],
@@ -327,9 +319,8 @@ all_benchmarks = {
             "rotating_calipers_find_diameter": ["num_convex_hull_points"],
             "polygon_area_shoelace": ["num_polygon_vertices"],
             "largest_empty_circle_in_points": ["num_points"],
-            "visibility_graph_construction": ["num_obstacles", "total_vertices"],
-            "shortest_path_in_polygon": ["num_polygon_vertices"],
-            "polygon_clipping_sutherland_hodgman": ["num_subject_vertices", "num_clip_vertices"],
+            "visibility_graph_construction": ["num_obstacles", "total_vertices", "seed"],
+            "shortest_path_in_polygon": ["num_polygon_vertices", "start_vertex_index", "end_vertex_index"],
             "minkowski_sum_convex_polygons": ["num_vertices_A", "num_vertices_B"]
         }
     ),
@@ -337,12 +328,12 @@ all_benchmarks = {
         "The manipulation of mathematical expressions and equations in symbolic form, as opposed to numerical approximation. Complexity arises from 'expression swell' where terms grow exponentially.",
         {
             "polynomial_expand": ["num_variables", "initial_terms", "expansion_power"],
-            "polynomial_factorization": ["num_variables", "polynomial_degree", "max_coefficient_bits"],
-            "polynomial_gcd_multivariate": ["num_variables", "polynomial_degree1", "polynomial_degree2"],
-            "polynomial_division_multivariate": ["num_variables", "dividend_degree", "divisor_degree"],
+            "polynomial_factorization": ["num_variables", "polynomial_degree", "max_coefficient_bits", "num_candidate_factors"],
+            "polynomial_gcd_multivariate": ["num_variables", "max_degree", "num_terms1", "num_terms2"],
+            "polynomial_division_multivariate": ["num_variables", "dividend_degree", "divisor_degree", "dividend_num_terms", "divisor_num_terms"],
             "resultant_of_polynomials": ["num_variables", "polynomial_degree1", "polynomial_degree2"],
             "groebner_basis_calculation": ["num_polynomials", "num_variables", "max_degree"],
-            "simplify_rational_expression": ["num_variables", "numerator_degree", "denominator_degree"],
+            "simplify_rational_expression": ["num_variables", "numerator_degree", "denominator_degree", "numerator_terms", "denominator_terms"],
             "solve_linear_system_symbolic": ["num_equations", "num_variables"],
             "solve_polynomial_system": ["num_equations", "num_variables", "max_degree"],
             "symbolic_differentiation": ["num_variables", "expression_tree_depth", "differentiation_order"],
@@ -352,7 +343,7 @@ all_benchmarks = {
             "matrix_symbolic_determinant": ["matrix_dim"],
             "matrix_symbolic_inverse": ["matrix_dim"],
             "matrix_symbolic_multiplication": ["matrix_dim1_rows", "matrix_dim1_cols", "matrix_dim2_cols"],
-            "matrix_symbolic_char_poly": ["matrix_dim"]
+            "matrix_symbolic_char_poly": ["matrix_dim", "seed"]
         }
     ),
     "Data Compression": (
@@ -363,7 +354,6 @@ all_benchmarks = {
             "arithmetic_coding_compress": ["input_size_mb", "model_precision_bits"],
             "arithmetic_coding_decompress": ["input_size_mb"],
             "lz77_compress": ["input_size_mb", "sliding_window_size", "lookahead_buffer_size"],
-            "lz77_decompress": ["input_size_mb"],
             "lzss_compress": ["input_size_mb", "sliding_window_size"],
             "lzw_compress": ["input_size_mb", "max_dictionary_size"],
             "lzw_decompress": ["input_size_mb", "max_dictionary_size"],
@@ -372,7 +362,7 @@ all_benchmarks = {
             "move_to_front_transform": ["input_size_mb", "alphabet_size"],
             "inverse_move_to_front_transform": ["input_size_mb", "alphabet_size"],
             "run_length_encoding_compress": ["input_size_mb"],
-            "run_length_encoding_decompress": ["input_size_mb"],
+            "run_length_encoding_decompress": ["input_size_mb", "run_pattern_factor"],
             "delta_encoding_compress": ["input_size_mb", "word_size_bytes"],
             "delta_encoding_decompress": ["input_size_mb", "word_size_bytes"],
             "bzip2_like_compress_pipeline": ["input_size_mb", "bwt_block_size_kb"],
@@ -384,19 +374,15 @@ all_benchmarks = {
         {
             "lexical_analyzer_run": ["input_size_bytes", "num_lexical_rules"],
             "recursive_descent_parser": ["input_token_count", "grammar_rule_count", "max_nesting_depth"],
-            "ll_k_parser_from_table": ["input_token_count", "k_lookahead", "num_table_entries"],
-            "lr_0_parser_from_table": ["input_token_count", "num_parser_states"],
-            "slr_parser_from_table": ["input_token_count", "num_parser_states"],
-            "lalr_parser_from_table": ["input_token_count", "num_parser_states"],
-            "earley_parser": ["input_token_count", "grammar_rule_count"],
-            "cyk_parser": ["input_token_count", "grammar_rule_count_in_cnf"],
-            "glr_parser": ["input_token_count", "grammar_rule_count"],
-            "regex_nfa_simulation": ["input_string_length", "regex_pattern_complexity"],
+            "earley_parser": ["input_token_count", "grammar_rule_count", "num_non_terminals", "num_terminals"],
+            "cyk_parser": ["input_token_count", "num_non_terminals", "grammar_rule_count_in_cnf"],
+            "glr_parser": ["input_token_count", "grammar_rule_count", "num_states", "num_symbols"],
+            "regex_nfa_simulation": ["input_string_length", "num_nfa_states"],
             "regex_dfa_execution": ["input_string_length", "num_dfa_states"],
             "generate_lr_parsing_table": ["num_grammar_rules", "num_terminals", "num_non_terminals"],
             "convert_nfa_to_dfa": ["num_nfa_states", "alphabet_size"],
             "peg_parser": ["input_token_count", "num_grammar_rules"],
-            "context_sensitive_grammar_parser_lba": ["input_string_length", "num_grammar_rules"]
+            "context_sensitive_grammar_parser_lba": ["input_string_length", "num_grammar_rules", "max_configurations"]
         }
     ),
     "Sorting": (
@@ -415,7 +401,6 @@ all_benchmarks = {
             "radix_sort_lsd": ["num_elements", "max_value_in_data"],
             "bucket_sort": ["num_elements", "num_buckets"],
             "quicksort_with_insertion_sort_cutoff": ["num_elements", "cutoff_size"],
-            "external_merge_sort": ["total_elements", "ram_capacity_in_elements"],
             "pancake_sort": ["num_elements"],
             "binary_tree_sort": ["num_elements", "initial_data_distribution"]
         }
@@ -423,21 +408,21 @@ all_benchmarks = {
     "Computational Chemistry": (
         "Using computer simulations to solve chemical problems, often involving complex quantum mechanical (ab initio, DFT) or classical (molecular dynamics) calculations with high polynomial scaling.",
         {
-            "hartree_fock_scf": ["num_atoms", "num_basis_functions_per_atom"],
+            "hartree_fock_scf": ["num_basis_functions", "max_scf_iterations"],
             "density_functional_theory_scf": ["num_atoms", "num_basis_functions_per_atom", "integration_grid_quality"],
             "moller_plesset_perturbation_theory_mp2": ["num_occupied_orbitals", "num_virtual_orbitals"],
             "coupled_cluster_ccsd": ["num_occupied_orbitals", "num_virtual_orbitals"],
-            "quantum_monte_carlo_vqe": ["num_qubits", "circuit_depth", "num_shots"],
+            "quantum_monte_carlo_vqe": ["num_qubits", "circuit_depth", "num_shots", "num_hamiltonian_terms"],
             "molecular_dynamics_nvt": ["num_atoms", "num_time_steps", "non_bonded_cutoff_radius"],
             "molecular_dynamics_npt": ["num_atoms", "num_time_steps", "non_bonded_cutoff_radius"],
-            "energy_minimization_steepest_descent": ["num_atoms", "max_iterations"],
+            "energy_minimization_steepest_descent": ["num_atoms", "max_iterations", "alpha", "epsilon", "sigma"],
             "conformational_search_monte_carlo": ["num_atoms", "num_rotatable_bonds", "num_mc_steps"],
             "free_energy_perturbation": ["num_atoms", "num_lambda_windows", "time_steps_per_window"],
             "semi_empirical_mopac_run": ["num_atoms"],
-            "calculate_radial_distribution_function": ["num_frames", "num_particles", "num_bins"],
+            "calculate_radial_distribution_function": ["num_frames", "num_particles", "num_bins", "box_size"],
             "calculate_rmsd_trajectory": ["num_frames", "num_atoms_to_align"],
             "principal_component_analysis_of_trajectory": ["num_frames", "num_atoms"],
-            "build_wham_potential_of_mean_force": ["num_umbrella_windows", "data_points_per_window"],
+            "build_wham_potential_of_mean_force": ["num_umbrella_windows", "data_points_per_window", "num_bins", "num_iterations"],
             "calculate_vibrational_frequencies": ["num_atoms", "num_basis_functions"],
             "simulate_nmr_chemical_shifts": ["num_atoms", "num_basis_functions"]
         }
@@ -450,17 +435,16 @@ all_benchmarks = {
             "raster_hydrology_flow_accumulation": ["dem_width", "dem_height"],
             "focal_statistics_mean_filter": ["grid_width", "grid_height", "kernel_size"],
             "raster_overlay_weighted_sum": ["grid_width", "grid_height", "num_layers"],
-            "zonal_statistics": ["zone_raster_width", "zone_raster_height", "value_raster_width", "value_raster_height", "num_zones"],
+            "zonal_statistics": ["width", "height", "num_zones"],
             "vector_overlay_intersect_polygons": ["num_polygons_A", "avg_vertices_A", "num_polygons_B", "avg_vertices_B"],
             "vector_overlay_union_polygons": ["num_polygons_A", "avg_vertices_A", "num_polygons_B", "avg_vertices_B"],
-            "buffer_generation": ["num_features", "avg_vertices_per_feature", "buffer_resolution_segments"],
+            "buffer_generation": ["num_features", "avg_vertices_per_feature", "buffer_resolution_segments", "buffer_distance"],
             "spatial_join_points_in_polygons": ["num_points", "num_polygons", "avg_vertices_per_polygon"],
-            "dissolve_polygons_by_attribute": ["num_input_polygons", "avg_vertices_per_polygon"],
+            "dissolve_polygons_by_attribute": ["num_input_polygons", "avg_vertices_per_polygon", "num_attributes"],
             "network_analysis_service_area": ["num_nodes", "num_edges", "num_facilities", "break_time_or_distance"],
-            "point_cloud_ground_classification": ["num_points", "grid_resolution"],
+            "point_cloud_ground_classification": ["num_points", "grid_resolution", "height_threshold"],
             "point_cloud_to_dem_interpolation": ["num_points", "output_grid_width", "output_grid_height", "interpolation_method"],
             "rasterize_polygons": ["num_polygons", "avg_vertices_per_polygon", "output_grid_width", "output_grid_height"],
-            "vectorize_raster": ["grid_width", "grid_height"],
             "reproject_vector_layer": ["num_features", "avg_vertices_per_feature"],
             "build_spatial_index_r_tree": ["num_features"],
             "build_spatial_index_quadtree": ["num_points", "max_tree_depth"],
@@ -472,13 +456,12 @@ all_benchmarks = {
         "The manipulation of signals (like audio or sensor data) represented as sequences of numbers. This theme covers common operations like filtering, transforms (FFT), convolution, and modulation on large data streams.",
         {
             "fast_fourier_transform_radix2": ["num_samples", "num_transforms_to_run"],
-            "inverse_fast_fourier_transform": ["num_samples", "num_transforms_to_run"],
             "discrete_cosine_transform": ["num_samples", "num_transforms_to_run"],
             "short_time_fourier_transform": ["signal_length", "window_size", "hop_size"],
             "wavelet_transform_discrete": ["signal_length", "decomposition_levels"],
             "fir_filter_direct_form": ["signal_length", "num_filter_taps"],
             "iir_filter_direct_form": ["signal_length", "num_feedback_taps", "num_feedforward_taps"],
-            "fir_filter_fft_overlap_add": ["signal_length", "num_filter_taps", "fft_block_size"],
+            "fir_filter_fft_overlap_add": ["signal_length", "num_filter_taps", "fft_size"],
             "median_filter": ["signal_length", "window_size"],
             "convolution_direct": ["input_signal_length", "kernel_length"],
             "auto_correlation_direct": ["signal_length", "max_lag"],
@@ -490,8 +473,8 @@ all_benchmarks = {
             "resample_polyphase_fir": ["signal_length", "interpolation_factor", "decimation_factor", "num_taps_per_phase"],
             "upsample_with_interpolation": ["signal_length", "interpolation_factor", "filter_order"],
             "downsample_with_decimation": ["signal_length", "decimation_factor", "filter_order"],
-            "lms_adaptive_filter_run": ["signal_length", "num_filter_taps"],
-            "pitch_detection_autocorrelation": ["audio_buffer_size_ms", "sample_rate_hz"],
+            "lms_adaptive_filter_run": ["signal_length", "num_filter_taps", "learning_rate"],
+            "pitch_detection_autocorrelation": ["audio_buffer_size_ms", "sample_rate_hz", "fundamental_frequency_hz"],
             "dynamic_time_warping": ["sequence1_length", "sequence2_length", "window_size"]
         }
     ),
@@ -501,17 +484,14 @@ all_benchmarks = {
             "apriori_frequent_itemsets": ["num_transactions", "num_unique_items", "min_support_threshold"],
             "fp_growth_frequent_itemsets": ["num_transactions", "num_unique_items", "min_support_threshold"],
             "eclat_frequent_itemsets": ["num_transactions", "num_unique_items", "min_support_threshold"],
-            "generate_association_rules_from_itemsets": ["num_frequent_itemsets", "min_confidence_threshold"],
+            "generate_association_rules_from_itemsets": ["num_frequent_itemsets", "min_confidence_threshold", "seed"],
             "gsp_sequential_patterns": ["num_sequences", "avg_sequence_length", "num_unique_items", "min_support_threshold"],
             "prefix_span_sequential_patterns": ["num_sequences", "avg_sequence_length", "num_unique_items", "min_support_threshold"],
-            "k_means_on_disk": ["num_points", "num_features", "num_clusters", "max_iterations"],
-            "dbscan_with_indexing": ["num_points", "num_features", "epsilon", "min_samples"],
             "birch_clustering": ["num_points", "num_features", "branching_factor", "threshold"],
-            "clarans_clustering": ["num_points", "num_features", "num_clusters", "num_local_searches", "max_neighbors"],
-            "id3_decision_tree_build": ["num_samples", "num_features", "num_classes"],
+            "clarans_clustering": ["num_points", "num_features", "num_clusters", "num_local_searches", "max_neighbors", "num_random_numbers"],
+            "id3_decision_tree_build": ["num_samples", "num_features", "num_classes", "num_feature_values"],
             "c45_decision_tree_build": ["num_samples", "num_features", "num_classes"],
             "cart_decision_tree_build": ["num_samples", "num_features"],
-            "naive_bayes_from_disk": ["num_samples", "num_features", "num_classes"],
             "page_rank_calculation": ["num_webpages", "num_links", "num_iterations"],
             "hits_algorithm_calculation": ["num_nodes", "num_edges", "num_iterations"]
         }
@@ -519,21 +499,20 @@ all_benchmarks = {
     "Real-time Stream Processing": (
         "Processing data continuously as it is generated, focusing on low-latency analysis of high-velocity data streams. Benchmarks test windowed aggregations, joins, and stateful operations under high throughput.",
         {
-            "tumbling_window_aggregation": ["events_per_second", "window_duration_ms", "aggregation_complexity"],
+            "tumbling_window_aggregation": ["simulation_duration_s", "events_per_second", "window_duration_ms", "aggregation_complexity"],
             "sliding_window_aggregation": ["events_per_second", "window_duration_ms", "slide_duration_ms"],
-            "session_window_aggregation": ["events_per_second", "session_gap_ms"],
-            "stream_to_stream_join": ["events_per_second_stream1", "events_per_second_stream2", "window_duration_ms"],
+            "stream_to_stream_join": ["events_per_second_stream1", "events_per_second_stream2", "window_duration_ms", "simulation_duration_s"],
             "stream_to_table_join": ["events_per_second", "table_size_records"],
             "stateful_map_with_keyed_state": ["events_per_second", "num_unique_keys", "state_size_per_key_bytes"],
-            "complex_event_processing_pattern_matching": ["events_per_second", "pattern_sequence_length", "time_window_ms"],
+            "complex_event_processing_pattern_matching": ["events_per_second", "pattern_sequence_length", "time_window_ms", "simulation_duration_s", "num_event_types"],
             "stream_deduplication": ["events_per_second", "time_window_for_uniqueness_ms", "num_unique_keys"],
-            "event_time_reordering_and_watermarking": ["events_per_second", "max_out_of_orderness_ms"],
+            "event_time_reordering_and_watermarking": ["events_per_second", "max_out_of_orderness_ms", "duration_seconds"],
             "stream_filtering_lambda": ["events_per_second", "filter_selectivity_percentage"],
             "stream_flatmap_operation": ["events_per_second", "avg_outputs_per_input"],
-            "hyperloglog_count_distinct": ["events_per_second", "num_unique_keys_to_track"],
+            "hyperloglog_count_distinct": ["total_events", "num_unique_keys", "seed"],
             "bloom_filter_check_stream": ["events_per_second", "num_items_in_filter", "hash_functions"],
-            "count_min_sketch_frequency_count": ["events_per_second", "sketch_width", "sketch_depth"],
-            "heavy_hitters_detection": ["events_per_second", "top_k_elements_to_find"]
+            "count_min_sketch_frequency_count": ["total_events", "sketch_width", "sketch_depth"],
+            "heavy_hitters_detection": ["total_events", "top_k_elements_to_find"]
         }
     ),
     "Boolean Satisfiability (SAT) and Constraint Solving": (
@@ -541,37 +520,36 @@ all_benchmarks = {
         {
             "dpll_solver": ["num_variables", "num_clauses", "clause_to_variable_ratio"],
             "cdcl_solver_basic": ["num_variables", "num_clauses", "clause_to_variable_ratio"],
-            "walksat_local_search_solver": ["num_variables", "num_clauses", "max_flips", "max_tries"],
+            "walksat_local_search_solver": ["num_variables", "num_clauses", "max_flips", "max_tries", "seed"],
             "two_sat_solver": ["num_variables", "num_clauses"],
-            "horn_sat_solver": ["num_variables", "num_clauses"],
             "max_sat_solver_branch_and_bound": ["num_variables", "num_clauses", "num_hard_clauses"],
             "csp_backtracking_search": ["num_variables", "domain_size_per_variable", "constraint_tightness_percentage"],
             "csp_forward_checking": ["num_variables", "domain_size_per_variable", "constraint_tightness_percentage"],
             "csp_arc_consistency_ac3": ["num_variables", "domain_size_per_variable", "num_constraints"],
-            "csp_min_conflicts_local_search": ["num_variables", "domain_size_per_variable", "max_steps"],
+            "csp_min_conflicts_local_search": ["num_variables", "domain_size_per_variable", "max_steps", "num_constraints", "seed"],
             "smt_solver_difference_logic": ["num_variables", "num_constraints"],
-            "smt_solver_uninterpreted_functions": ["num_variables", "num_function_applications"],
+            "smt_solver_uninterpreted_functions": ["num_variables", "num_function_applications", "num_equalities", "num_disequalities"],
             "build_binary_decision_diagram_from_cnf": ["num_variables", "num_clauses", "variable_ordering_heuristic"],
-            "resolution_theorem_proving": ["num_initial_clauses"]
+            "resolution_theorem_proving": ["num_initial_clauses", "num_variables", "max_literals_per_clause"]
         }
     ),
     "Automated Theorem Proving and Formal Verification": (
         "Using computer programs to prove mathematical theorems or formally verify the correctness of hardware or software systems. This involves navigating enormous state spaces and complex logical formulas.",
         {
             "tableau_prover_first_order": ["formula_depth", "num_variables", "num_quantifiers"],
-            "resolution_prover_fol": ["num_initial_clauses", "term_depth"],
+            "resolution_prover_fol": ["num_initial_clauses", "term_depth", "literals_per_clause", "resolution_steps"],
             "unification_engine_run": ["num_terms", "max_term_depth", "num_variables"],
             "explicit_state_model_checker_ltl": ["num_states", "num_transitions_per_state", "ltl_formula_complexity"],
             "symbolic_model_checker_ctl_bdd": ["num_state_variables", "ctl_formula_complexity"],
             "bounded_model_checker_sat": ["num_state_variables", "transition_logic_complexity", "unrolling_bound_k"],
-            "explicit_state_buchke_automaton_check": ["num_states_model", "num_states_automaton"],
-            "combinatorial_equivalence_check_aig": ["num_gates_circuit_a", "num_gates_circuit_b"],
+            "explicit_state_buchke_automaton_check": ["num_states_model", "num_states_automaton", "edge_density"],
+            "combinatorial_equivalence_check_aig": ["num_primary_inputs", "num_gates_circuit_a", "num_gates_circuit_b", "num_simulation_vectors"],
             "bisimulation_equivalence_check": ["num_states_a", "num_transitions_a", "num_states_b", "num_transitions_b"],
             "symbolic_execution_path_explosion": ["program_branching_factor", "max_path_depth"],
             "weakest_precondition_calculation": ["num_statements", "loop_nesting_depth", "assertion_complexity"],
             "abstract_interpretation_run": ["num_program_variables", "abstract_domain_size", "num_loops"],
             "knuth_bendix_completion_algorithm": ["num_initial_rules", "max_term_length"],
-            "check_confluence_rewriting_system": ["num_rules", "max_term_length"],
+            "check_confluence_rewriting_system": ["num_rules", "max_term_length", "seed"],
             "type_inference_hindley_milner": ["expression_tree_size", "num_let_bindings"],
             "apply_automated_proof_search_tactic": ["num_initial_lemmas", "goal_complexity", "search_depth"]
         }
@@ -589,14 +567,14 @@ all_benchmarks = {
             "monte_carlo_value_at_risk": ["num_assets", "num_simulations", "time_horizon_days"],
             "historical_value_at_risk": ["num_assets", "num_historical_days"],
             "conditional_value_at_risk_optimization": ["num_assets", "num_scenarios"],
-            "efficient_frontier_calculation": ["num_assets", "num_frontier_points"],
+            "efficient_frontier_calculation": ["num_assets", "num_portfolios"],
             "garch_model_fitting": ["time_series_length", "p_order", "q_order"],
             "arma_model_fitting": ["time_series_length", "p_order", "q_order"],
             "kalman_filter_state_estimation": ["time_series_length", "num_state_variables"],
             "backtest_trading_strategy": ["num_historical_bars", "num_assets", "strategy_complexity_score"],
             "market_order_book_simulation": ["num_market_events", "order_book_depth"],
             "agent_based_market_simulation": ["num_agents", "num_simulation_steps", "num_assets"],
-            "credit_portfolio_loss_simulation_mc": ["num_obligors", "num_simulations", "correlation_factor"],
+            "credit_portfolio_loss_simulation_mc": ["num_obligors", "num_simulations", "correlation_factor", "default_threshold"],
             "hull_white_model_calibration": ["num_market_instruments", "time_series_length"],
             "bond_yield_curve_construction": ["num_bonds", "spline_complexity"]
         }
@@ -604,7 +582,7 @@ all_benchmarks = {
     "Robotics, Pathfinding, and Motion Planning": (
         "Algorithms that enable robots to perceive their environment, plan movements, and execute tasks. This includes pathfinding on grids, motion planning in continuous space, and solving manipulator kinematics.",
         {
-            "a_star_pathfinding_2d_grid": ["grid_width", "grid_height", "obstacle_percentage"],
+            "a_star_pathfinding_2d_grid": ["grid_width", "grid_height", "obstacle_percentage", "seed"],
             "jump_point_search_pathfinding": ["grid_width", "grid_height", "obstacle_percentage"],
             "d_star_lite_replanning": ["grid_width", "grid_height", "num_cost_updates"],
             "theta_star_any_angle_pathfinding": ["grid_width", "grid_height", "obstacle_percentage"],
@@ -616,12 +594,11 @@ all_benchmarks = {
             "inverse_dynamics_simulation_rnea": ["num_links", "num_trajectory_points"],
             "collision_detection_broadphase": ["num_objects_a", "num_objects_b"],
             "collision_detection_narrowphase_gjk": ["num_vertices_a", "num_vertices_b"],
-            "particle_filter_localization_mcl": ["num_particles", "map_width", "map_height", "num_updates"],
+            "particle_filter_localization_mcl": ["num_particles", "map_width", "map_height", "num_updates", "seed"],
             "iterative_closest_point_registration": ["num_points_cloud_a", "num_points_cloud_b", "max_iterations"],
             "occupancy_grid_mapping_from_scans": ["map_width", "map_height", "num_sensor_readings", "readings_per_scan"],
             "pose_graph_optimization_backend": ["num_poses", "num_loop_closures"],
-            "lqr_controller_calculation": ["num_states", "num_inputs"],
-            "potential_field_navigation": ["grid_width", "grid_height", "num_obstacles"]
+            "potential_field_navigation": ["grid_width", "grid_height", "num_obstacles", "max_iterations"]
         }
     ),
     "Game AI and Tree Search Algorithms": (
@@ -641,7 +618,7 @@ all_benchmarks = {
             "squad_behavior_tree_execution": ["num_agents", "tree_depth", "ticks_to_simulate"],
             "chess_engine_perft": ["depth"],
             "go_board_influence_calculation": ["board_size", "num_stones"],
-            "checkers_endgame_database_probe": ["num_pieces_on_board", "num_probes"]
+            "checkers_endgame_database_probe": ["database_size_mb", "num_probes"]
         }
     ),
     "Digital Logic and Circuit Simulation": (
@@ -649,14 +626,14 @@ all_benchmarks = {
         {
             "event_driven_logic_simulation": ["num_gates", "num_flip_flops", "num_input_vectors", "simulation_duration_ns"],
             "cycle_based_logic_simulation": ["num_gates", "num_flip_flops", "num_clock_cycles"],
-            "levelized_compiled_code_simulation": ["num_gates", "num_input_vectors"],
+            "levelized_compiled_code_simulation": ["num_gates", "num_input_vectors", "num_primary_inputs"],
             "logic_synthesis_optimization": ["num_initial_gates", "optimization_effort_level"],
-            "static_timing_analysis_sta": ["num_gates", "num_paths_to_analyze"],
+            "static_timing_analysis_sta": ["num_gates", "edge_factor"],
             "power_analysis_simulation": ["num_gates", "num_flip_flops", "num_clock_cycles", "toggle_rate_percentage"],
-            "combinational_equivalence_checking_sat": ["num_gates_circuit_a", "num_gates_circuit_b"],
+            "combinational_equivalence_checking_sat": ["num_inputs", "num_gates_circuit_a", "num_gates_circuit_b"],
             "bounded_model_checking": ["num_flip_flops", "num_gates", "property_complexity", "max_depth_k"],
-            "fault_simulation_parallel": ["num_gates", "num_faults", "num_test_vectors"],
-            "fault_simulation_deductive": ["num_gates", "num_test_vectors"],
+            "fault_simulation_parallel": ["num_gates", "num_faults", "num_test_vectors", "num_primary_inputs"],
+            "fault_simulation_deductive": ["num_gates", "num_primary_inputs", "num_primary_outputs", "num_test_vectors"],
             "automatic_test_pattern_generation_podem": ["num_gates", "num_target_faults"],
             "transient_analysis_ngspice_like": ["num_nodes", "num_active_elements", "simulation_time_end", "time_step"],
             "ac_analysis_ngspice_like": ["num_nodes", "num_active_elements", "num_frequency_points"],
@@ -670,19 +647,18 @@ all_benchmarks = {
         {
             "build_vietoris_rips_complex": ["num_points", "ambient_dimension", "epsilon_radius", "max_simplicial_dimension"],
             "build_cech_complex": ["num_points", "ambient_dimension", "epsilon_radius", "max_simplicial_dimension"],
-            "build_alpha_complex": ["num_points", "max_simplicial_dimension"],
-            "build_witness_complex": ["num_landmark_points", "num_witness_points", "max_simplicial_dimension"],
+            "build_alpha_complex": ["num_points", "max_simplicial_dimension", "alpha"],
+            "build_witness_complex": ["num_landmark_points", "num_witness_points", "max_simplicial_dimension", "point_dimension", "max_distance"],
             "compute_simplicial_homology": ["num_simplices", "max_simplicial_dimension"],
             "smith_normal_form_boundary_matrix": ["num_rows", "num_cols"],
-            "betti_numbers_from_homology_groups": ["num_simplices", "max_simplicial_dimension"],
+            "betti_numbers_from_homology_groups": ["num_points", "max_simplicial_dimension"],
             "compute_persistent_homology_filtration": ["num_simplices_in_filtration", "max_dimension"],
-            "construct_persistence_diagram": ["num_simplices_in_filtration", "max_dimension"],
             "calculate_bottleneck_distance": ["num_points_diagram_a", "num_points_diagram_b"],
             "calculate_wasserstein_distance": ["num_points_diagram_a", "num_points_diagram_b"],
             "zigzag_persistence_calculation": ["filtration_length", "max_dimension"],
-            "manifold_reconstruction_local_pca": ["num_points", "num_neighbors", "target_dimension"],
+            "manifold_reconstruction_local_pca": ["num_points", "num_neighbors", "target_dimension", "ambient_dimension"],
             "isomap_embedding": ["num_points", "num_neighbors", "target_dimension"],
-            "locally_linear_embedding_lle": ["num_points", "num_neighbors", "target_dimension"],
+            "locally_linear_embedding_lle": ["num_points", "num_neighbors", "target_dimension", "source_dimension"],
             "discrete_morse_theory_simplification": ["num_simplices", "max_dimension"],
             "construct_morse_smale_complex": ["num_simplices", "max_dimension"],
             "calculate_jones_polynomial": ["num_crossings"]
@@ -692,7 +668,7 @@ all_benchmarks = {
         "Algorithms for creating sound (synthesis) and extracting meaningful information from audio signals (analysis). This theme covers everything from generating sounds with oscillators to complex spectral analysis like MFCCs.",
         {
             "additive_synthesis_run": ["duration_seconds", "sample_rate_hz", "num_harmonics"],
-            "subtractive_synthesis_run": ["duration_seconds", "sample_rate_hz", "filter_order", "num_modulation_steps"],
+            "subtractive_synthesis_run": ["duration_seconds", "sample_rate_hz", "filter_order", "num_modulation_steps", "num_harmonics"],
             "fm_synthesis_run": ["duration_seconds", "sample_rate_hz", "num_operators"],
             "wavetable_synthesis_run": ["duration_seconds", "sample_rate_hz", "wavetable_size", "num_interpolations"],
             "physical_modeling_karplus_strong": ["duration_seconds", "sample_rate_hz", "delay_line_length"],
@@ -701,15 +677,172 @@ all_benchmarks = {
             "onset_detection_spectral_flux": ["audio_length_seconds", "sample_rate_hz", "fft_size", "hop_size"],
             "mfcc_extraction": ["audio_length_seconds", "sample_rate_hz", "num_mfccs", "fft_size", "hop_size"],
             "chromagram_extraction": ["audio_length_seconds", "sample_rate_hz", "fft_size", "hop_size"],
-            "beat_tracking_dynamic_programming": ["audio_length_seconds", "sample_rate_hz", "tempo_search_range"],
+            "beat_tracking_dynamic_programming": ["num_onsets", "min_bpm", "max_bpm"],
             "constant_q_transform": ["audio_length_seconds", "sample_rate_hz", "bins_per_octave"],
             "spectral_centroid_analysis": ["audio_length_seconds", "sample_rate_hz", "fft_size", "hop_size"],
             "convolution_reverb_apply": ["input_audio_length", "impulse_response_length"],
             "phase_vocoder_time_stretch": ["audio_length_seconds", "stretch_factor", "fft_size", "hop_size"],
             "phase_vocoder_pitch_shift": ["audio_length_seconds", "pitch_shift_factor", "fft_size", "hop_size"],
-            "dynamic_range_compression": ["audio_length_seconds", "sample_rate_hz"],
-            "harmonic_percussive_source_separation": ["audio_length_seconds", "sample_rate_hz", "margin", "kernel_size"],
-            "independent_component_analysis_fastica": ["audio_length_seconds", "num_channels", "num_iterations"]
+            "dynamic_range_compression": ["audio_length_seconds", "sample_rate_hz", "threshold_db", "ratio", "attack_ms", "release_ms", "makeup_gain_db"],
+            "harmonic_percussive_source_separation": ["num_freq_bins", "num_time_frames", "margin", "kernel_size"],
+            "independent_component_analysis_fastica": ["num_samples", "num_channels", "num_iterations"]
+        }
+    ),
+    "Number Theory Computations": (
+        "Algorithms for basic number-theoretic operations, such as primality testing, factorization, and modular arithmetic.",
+        {
+            "sieve_of_eratosthenes": ["upper_limit"],
+            "extended_euclidean_gcd": ["num_pairs", "max_number_size"],
+            "modular_exponentiation": ["num_calculations"],
+            "legendre_symbol_computation": ["num_pairs", "modulus"],
+            "totient_function_euler": ["num_samples", "upper_limit"]
+        }
+    ),
+    "Recursive Algorithms": (
+        "Classic recursive problems that test call stack and base-case computations.",
+        {
+            "fibonacci_recursive": ["n_term"],
+            "tower_of_hanoi": ["num_disks"],
+            "recursive_factorial": ["n_value"],
+            "ackermann_function": ["m_value", "n_value"],
+            "recursive_permutations": ["num_elements"],
+            "tree_recursion_depth": ["depth"]
+        }
+    ),
+    "Simple Simulations": (
+        "Lightweight simulations of discrete systems, such as cellular automata or basic physics, using iterative loops.",
+        {
+            "game_of_life_simulation": ["grid_size", "num_generations"],
+            "monte_carlo_pi_estimation": ["num_samples"],
+            "brownian_motion_1d": ["num_particles", "num_steps"],
+            "cellular_automaton_rule30": ["row_length", "num_rows"],
+            "predator_prey_model": ["num_steps", "initial_population"]
+        }
+    ),
+    "Bit Manipulation and Low-Level Ops": (
+        "Operations focused on bitwise manipulations, shifts, and masks.",
+        {
+            "bitwise_population_count": ["num_integers", "bit_width"],
+            "bit_matrix_transpose": ["matrix_size", "seed"],
+            "gray_code_generation": ["num_bits"],
+            "bitwise_crc32_computation": ["data_size_bytes"],
+            "hamming_distance_batch": ["num_pairs", "bit_length"],
+            "bitwise_sieve": ["upper_limit"]
+        }
+    ),
+    "Linear Algebra Operations": (
+        "Basic matrix and vector operations that form the foundation of scientific computing, focusing on dense linear algebra computations.",
+        {
+            "matrix_transpose": ["matrix_rows", "matrix_cols"],
+            "matrix_vector_multiply": ["matrix_rows", "matrix_cols"],
+            "vector_dot_product": ["vector_length"],
+            "matrix_trace": ["matrix_size"],
+            "matrix_power": ["matrix_size", "power"],
+            "gram_schmidt_orthogonalization": ["num_vectors", "vector_dimension"],
+            "householder_reflection": ["vector_length"],
+            "givens_rotation": ["matrix_size"],
+            "matrix_rank_calculation": ["matrix_rows", "matrix_cols", "target_rank"],
+            "matrix_condition_number": ["matrix_size"],
+            "kronecker_product": ["matrix_a_size", "matrix_b_size"]
+        }
+    ),
+    "Dynamic Programming Algorithms": (
+        "Classical optimization problems solved using memoization or tabulation, building solutions from smaller subproblems.",
+        {
+            "fibonacci_dp": ["n_term"],
+            "coin_change_problem": ["amount", "num_coin_types"],
+            "matrix_chain_multiplication": ["num_matrices"],
+            "longest_increasing_subsequence": ["sequence_length"],
+            "rod_cutting_problem": ["rod_length"],
+            "egg_dropping_problem": ["num_eggs", "num_floors"],
+            "palindrome_partitioning": ["string_length"],
+            "boolean_parenthesization": ["expression_length"],
+            "optimal_binary_search_tree": ["num_keys"],
+            "maximum_subarray_sum": ["array_length"],
+            "subset_sum_problem": ["set_size", "target_sum"]
+        }
+    ),
+    "Computational Arithmetic": (
+        "Algorithms for arbitrary precision arithmetic and special number computations beyond standard floating-point operations.",
+        {
+            "bignum_addition": ["num_digits_a", "num_digits_b"],
+            "bignum_multiplication_karatsuba": ["num_digits_a", "num_digits_b"],
+            "bignum_division": ["dividend_digits", "divisor_digits"],
+            "bignum_modular_reduction": ["num_digits", "modulus_digits"],
+            "compute_pi_digits_spigot": ["num_digits"],
+            "compute_e_digits": ["num_digits"],
+            "sqrt_newton_iteration": ["number_bits", "precision_bits"],
+            "continued_fraction_expansion": ["number", "max_terms"],
+            "rational_arithmetic": ["numerator_bits", "denominator_bits", "num_iterations"],
+            "complex_number_operations": ["num_operations"],
+            "quaternion_multiplication": ["num_multiplications"],
+            "interval_arithmetic": ["num_operations"]
+        }
+    ),
+    "Hashing and Checksums": (
+        "Non-cryptographic hash functions and checksum algorithms for data integrity and hash table implementations.",
+        {
+            "murmur_hash": ["data_size_kb"],
+            "city_hash": ["data_size_kb"],
+            "xxhash": ["data_size_kb"],
+            "fnv_hash": ["data_size_kb"],
+            "jenkins_hash": ["data_size_kb"],
+            "adler32_checksum": ["data_size_kb"],
+            "fletcher_checksum": ["data_size_kb"],
+            "rolling_hash_rabin_karp": ["window_size", "text_length"],
+            "zobrist_hashing": ["board_size", "num_positions"],
+            "crc16_computation": ["data_size_kb"],
+            "siphash": ["data_size_kb"],
+            "pearson_hash": ["data_size_kb"]
+        }
+    ),
+    "Cellular Automata Variants": (
+        "Different rule-based cellular automaton systems beyond Conway's Game of Life.",
+        {
+            "elementary_cellular_automaton": ["rule_number", "grid_width", "num_steps"],
+            "langtons_ant": ["grid_size", "num_steps"],
+            "wireworld_simulation": ["grid_width", "grid_height", "num_steps"],
+            "forest_fire_simulation": ["grid_size", "num_steps", "fire_probability", "growth_probability"],
+            "sand_pile_model": ["grid_size", "num_grains", "num_steps"],
+            "cyclic_cellular_automaton": ["grid_size", "num_states", "num_steps"],
+            "majority_vote_ca": ["grid_size", "num_iterations"],
+            "totalistic_ca": ["grid_size", "num_steps", "num_states"],
+            "block_cellular_automaton": ["grid_size", "block_size", "num_steps"],
+            "continuous_cellular_automaton": ["grid_size", "num_steps", "kernel_radius"]
+        }
+    ),
+    "Numerical Optimization": (
+        "Algorithms for finding optimal solutions to continuous optimization problems without derivatives.",
+        {
+            "golden_section_search": ["num_iterations", "precision", "poly_degree"],
+            "fibonacci_search": ["num_iterations", "precision"],
+            "brent_method": ["num_iterations", "precision"],
+            "parabolic_interpolation": ["num_iterations", "precision"],
+            "nelder_mead_simplex": ["num_dimensions", "num_iterations"],
+            "pattern_search": ["num_dimensions", "num_iterations"],
+            "coordinate_descent": ["num_dimensions", "num_iterations"],
+            "random_search": ["num_dimensions", "num_samples"],
+            "grid_search": ["num_dimensions", "grid_points_per_dim"],
+            "trust_region_method": ["num_dimensions", "num_iterations"],
+            "levenberg_marquardt": ["num_parameters", "num_iterations", "num_data_points"],
+            "conjugate_gradient_nonlinear": ["num_dimensions", "num_iterations"]
+        }
+    ),
+    "Interpolation Methods": (
+        "Various interpolation algorithms for estimating values between known data points.",
+        {
+            "linear_interpolation": ["num_points", "num_queries"],
+            "bilinear_interpolation": ["grid_width", "grid_height", "num_queries"],
+            "bicubic_interpolation": ["grid_width", "grid_height", "num_queries"],
+            "barycentric_interpolation": ["num_points", "num_queries"],
+            "shepard_interpolation": ["num_points", "num_queries", "power_parameter"],
+            "rbf_interpolation": ["num_points", "num_queries", "rbf_type", "epsilon"],
+            "natural_neighbor_interpolation": ["num_points", "num_queries"],
+            "thin_plate_spline": ["num_control_points", "num_queries"],
+            "bezier_curve_evaluation": ["num_control_points", "num_eval_points"],
+            "bspline_evaluation": ["num_control_points", "degree", "num_eval_points"],
+            "catmull_rom_spline": ["num_points", "num_eval_points"],
+            "akima_spline": ["num_points", "num_eval_points"]
         }
     )
 }

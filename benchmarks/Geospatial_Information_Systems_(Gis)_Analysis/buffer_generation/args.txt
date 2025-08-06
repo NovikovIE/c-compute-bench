@@ -1,0 +1,1 @@
+num_features,avg_vertices_per_feature,buffer_resolution_segments,buffer_distance,seed

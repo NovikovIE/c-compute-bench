@@ -1,0 +1,1 @@
+num_transactions,num_unique_items,min_support_threshold,seed

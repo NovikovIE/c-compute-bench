@@ -1,0 +1,1 @@
+duration_seconds,sample_rate_hz,wavetable_size,num_interpolations,seed

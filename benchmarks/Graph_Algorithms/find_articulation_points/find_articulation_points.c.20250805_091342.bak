@@ -1,0 +1,262 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <stdint.h>
+#include <string.h>
+
+// --- Mersenne Twister (DO NOT MODIFY) ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+             fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+             exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+// --- End Mersenne Twister ---
+
+
+// --- Global Data Structure ---
+typedef struct {
+    int num_vertices;
+    long long num_edges;
+    int *adj;         // Compact adjacency list
+    int *adj_idx;     // Index into adj for each vertex
+
+    // For AP algorithm
+    int *disc;
+    int *low;
+    int *parent;
+    int *is_ap;
+    int time;
+    int root_children;
+
+    int final_result;
+} BenchmarkData;
+
+static BenchmarkData g_data;
+
+// --- Helper for Computation ---
+static int min(int a, int b) {
+    return a < b ? a : b;
+}
+
+// --- Articulation Point Computation (Recursive DFS) ---
+void find_ap_util(int u) {
+    g_data.disc[u] = g_data.low[u] = ++g_data.time;
+
+    int start_idx = g_data.adj_idx[u];
+    int end_idx = g_data.adj_idx[u+1];
+
+    for (int i = start_idx; i < end_idx; ++i) {
+        int v = g_data.adj[i];
+        if (v == g_data.parent[u]) {
+            continue;
+        }
+
+        if (g_data.disc[v] != -1) { // Visited and not parent, so it's a back edge
+            g_data.low[u] = min(g_data.low[u], g_data.disc[v]);
+        } else { // Not visited, so a tree edge
+            g_data.parent[v] = u;
+            if (g_data.parent[u] == -1) { // If u is the root of a DFS tree
+                g_data.root_children++;
+            }
+
+            find_ap_util(v);
+
+            g_data.low[u] = min(g_data.low[u], g_data.low[v]);
+
+            // Check for articulation point (non-root case)
+            if (g_data.parent[u] != -1 && g_data.low[v] >= g_data.disc[u]) {
+                g_data.is_ap[u] = 1;
+            }
+        }
+    }
+}
+
+
+// --- Benchmark Functions ---
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s <num_vertices> <num_edges> <seed>\n", argv[0]);
+        exit(1);
+    }
+
+    g_data.num_vertices = atoi(argv[1]);
+    g_data.num_edges = atoll(argv[2]);
+    uint32_t seed = atoi(argv[3]);
+    mt_seed(seed);
+
+    if (g_data.num_vertices <= 1) {
+        fprintf(stderr, "Error: num_vertices must be > 1.\n");
+        exit(1);
+    }
+    if (g_data.num_edges < g_data.num_vertices - 1) {
+        fprintf(stderr, "Error: num_edges must be at least num_vertices - 1 for a connected graph.\n");
+        exit(1);
+    }
+
+    // Allocate memory for data structures
+    g_data.adj_idx = (int*)malloc((g_data.num_vertices + 1) * sizeof(int));
+    g_data.adj = (int*)malloc(g_data.num_edges * 2 * sizeof(int));
+    
+    g_data.disc = (int*)malloc(g_data.num_vertices * sizeof(int));
+    g_data.low = (int*)malloc(g_data.num_vertices * sizeof(int));
+    g_data.parent = (int*)malloc(g_data.num_vertices * sizeof(int));
+    g_data.is_ap = (int*)malloc(g_data.num_vertices * sizeof(int));
+    
+    if (!g_data.adj_idx || !g_data.adj || !g_data.disc || !g_data.low || !g_data.parent || !g_data.is_ap) {
+        fprintf(stderr, "Error: Memory allocation failed.\n");
+        exit(1);
+    }
+    
+    // --- Graph Generation ---
+    int* degrees = (int*)calloc(g_data.num_vertices, sizeof(int));
+    int* edge_list = (int*)malloc(g_data.num_edges * 2 * sizeof(int));
+    
+    if (!degrees || !edge_list) {
+         fprintf(stderr, "Error: Temp memory allocation failed for graph generation.\n");
+         exit(1);
+    }
+
+    long long current_edge_count = 0;
+
+    // 1. Create a spanning tree (path graph) to ensure connectivity
+    for (int i = 0; i < g_data.num_vertices - 1; ++i) {
+        int u = i;
+        int v = i + 1;
+        edge_list[current_edge_count * 2] = u;
+        edge_list[current_edge_count * 2 + 1] = v;
+        degrees[u]++;
+        degrees[v]++;
+        current_edge_count++;
+    }
+
+    // 2. Add remaining random edges
+    while (current_edge_count < g_data.num_edges) {
+        int u = mt_rand() % g_data.num_vertices;
+        int v = mt_rand() % g_data.num_vertices;
+        if (u == v) continue;
+        
+        edge_list[current_edge_count * 2] = u;
+        edge_list[current_edge_count * 2 + 1] = v;
+        degrees[u]++;
+        degrees[v]++;
+        current_edge_count++;
+    }
+
+    // Pass 2: Build the compact adjacency list (CSR format)
+    g_data.adj_idx[0] = 0;
+    for (int i = 0; i < g_data.num_vertices; ++i) {
+        g_data.adj_idx[i + 1] = g_data.adj_idx[i] + degrees[i];
+    }
+    
+    int* temp_degrees = (int*)calloc(g_data.num_vertices, sizeof(int));
+
+    for (long long i = 0; i < g_data.num_edges; ++i) {
+        int u = edge_list[i * 2];
+        int v = edge_list[i * 2 + 1];
+
+        g_data.adj[g_data.adj_idx[u] + temp_degrees[u]] = v;
+        temp_degrees[u]++;
+
+        g_data.adj[g_data.adj_idx[v] + temp_degrees[v]] = u;
+        temp_degrees[v]++;
+    }
+
+    free(edge_list);
+    free(degrees);
+    free(temp_degrees);
+}
+
+void run_computation() {
+    // Initialize required arrays
+    memset(g_data.disc, -1, g_data.num_vertices * sizeof(int));
+    memset(g_data.parent, -1, g_data.num_vertices * sizeof(int));
+    memset(g_data.is_ap, 0, g_data.num_vertices * sizeof(int));
+    g_data.time = 0;
+    
+    // The graph is connected by design, but this loop is robust for disconnected graphs
+    for (int i = 0; i < g_data.num_vertices; i++) {
+        if (g_data.disc[i] == -1) {
+            g_data.root_children = 0;
+            find_ap_util(i);
+            // Special case for the root of a DFS tree
+            g_data.is_ap[i] = (g_data.root_children > 1);
+        }
+    }
+    
+    // Count the number of articulation points
+    int count = 0;
+    for (int i = 0; i < g_data.num_vertices; i++) {
+        if (g_data.is_ap[i]) {
+            count++;
+        }
+    }
+    g_data.final_result = count;
+}
+
+void cleanup() {
+    free(g_data.adj);
+    free(g_data.adj_idx);
+    free(g_data.disc);
+    free(g_data.low);
+    free(g_data.parent);
+    free(g_data.is_ap);
+}
+
+
+// --- Main Function ---
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    // Print result to stdout
+    printf("%d\n", g_data.final_result);
+
+    // Print time to stderr
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

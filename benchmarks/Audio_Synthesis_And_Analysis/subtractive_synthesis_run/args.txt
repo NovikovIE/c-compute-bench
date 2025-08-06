@@ -1,0 +1,1 @@
+duration_seconds,sample_rate_hz,filter_order,num_modulation_steps,num_harmonics,seed

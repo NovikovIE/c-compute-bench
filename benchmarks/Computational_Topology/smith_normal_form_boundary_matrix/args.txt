@@ -1,0 +1,1 @@
+num_rows,num_cols,seed

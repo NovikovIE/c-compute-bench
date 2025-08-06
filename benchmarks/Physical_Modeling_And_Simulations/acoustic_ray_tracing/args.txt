@@ -1,0 +1,1 @@
+num_rays,num_reflections,room_complexity,seed

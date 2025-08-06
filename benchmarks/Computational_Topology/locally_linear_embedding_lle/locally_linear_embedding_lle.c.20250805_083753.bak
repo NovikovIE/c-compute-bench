@@ -1,0 +1,300 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+#include <math.h>
+#include <string.h>
+#include <float.h>
+
+// Benchmark Parameters
+int num_points;
+int num_neighbors;
+int target_dimension;
+int source_dimension;
+
+// Global Data Structures
+double** points;        // Input data: num_points x source_dimension
+int** neighbors;        // Neighbor indices: num_points x num_neighbors
+double** weights;       // Reconstruction weights: num_points x num_neighbors
+double** embedding;     // Output data: num_points x target_dimension (allocated but not fully computed)
+double final_result;    // Accumulated result for preventing dead-code elimination
+
+// --- Mersenne Twister (DO NOT MODIFY) ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+             fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+             exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+// --- End Mersenne Twister ---
+
+// Utility function to generate a random double between 0 and 1
+double rand_double() {
+    return (double)mt_rand() / (double)UINT32_MAX;
+}
+
+// Utility for allocating 2D double arrays in a contiguous block
+double** alloc_2d_double(int rows, int cols) {
+    if (rows <= 0 || cols <= 0) return NULL;
+    double** array = (double**)malloc(rows * sizeof(double*));
+    if (array == NULL) return NULL;
+    double* data = (double*)malloc((size_t)rows * cols * sizeof(double));
+    if (data == NULL) {
+        free(array);
+        return NULL;
+    }
+    for (int i = 0; i < rows; i++) {
+        array[i] = data + i * cols;
+    }
+    return array;
+}
+
+// Utility for allocating 2D int arrays in a contiguous block
+int** alloc_2d_int(int rows, int cols) {
+    if (rows <= 0 || cols <= 0) return NULL;
+    int** array = (int**)malloc(rows * sizeof(int*));
+    if (array == NULL) return NULL;
+    int* data = (int*)malloc((size_t)rows * cols * sizeof(int));
+    if (data == NULL) {
+        free(array);
+        return NULL;
+    }
+    for (int i = 0; i < rows; i++) {
+        array[i] = data + i * cols;
+    }
+    return array;
+}
+
+// Utility for freeing 2D arrays allocated with alloc_2d_*
+void free_2d(void** array) {
+    if (array != NULL) {
+        if (array[0] != NULL) {
+            free(array[0]); // free the contiguous block of data
+        }
+        free(array); // free the array of pointers
+    }
+}
+
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 6) {
+        fprintf(stderr, "Usage: %s num_points num_neighbors target_dimension source_dimension seed\n", argv[0]);
+        exit(1);
+    }
+    num_points = atoi(argv[1]);
+    num_neighbors = atoi(argv[2]);
+    target_dimension = atoi(argv[3]);
+    source_dimension = atoi(argv[4]);
+    uint32_t seed = (uint32_t)atoi(argv[5]);
+
+    if(num_points <= 0 || num_neighbors <= 0 || target_dimension <= 0 || source_dimension <= 0 || num_neighbors >= num_points) {
+        fprintf(stderr, "FATAL: Invalid parameters.\n");
+        exit(1);
+    }
+
+    mt_seed(seed);
+
+    points = alloc_2d_double(num_points, source_dimension);
+    neighbors = alloc_2d_int(num_points, num_neighbors);
+    weights = alloc_2d_double(num_points, num_neighbors);
+    embedding = alloc_2d_double(num_points, target_dimension);
+
+    if (!points || !neighbors || !weights || !embedding) {
+        fprintf(stderr, "FATAL: Memory allocation failed\n");
+        exit(1);
+    }
+
+    for (int i = 0; i < num_points; ++i) {
+        for (int j = 0; j < source_dimension; ++j) {
+            points[i][j] = rand_double();
+        }
+    }
+    final_result = 0.0;
+}
+
+// Helper to calculate squared Euclidean distance
+double squared_distance(const double* p1, const double* p2) {
+    double dist_sq = 0.0;
+    for (int i = 0; i < source_dimension; ++i) {
+        double diff = p1[i] - p2[i];
+        dist_sq += diff * diff;
+    }
+    return dist_sq;
+}
+
+// Solves Ax = b using Gauss-Jordan elimination. A is destroyed.
+void solve_linear_system(double** A, double* b, double* x, int n) {
+    for (int i = 0; i < n; i++) {
+        int pivot_row = i;
+        for (int j = i + 1; j < n; j++) {
+            if (fabs(A[j][i]) > fabs(A[pivot_row][i])) {
+                pivot_row = j;
+            }
+        }
+        if (pivot_row != i) {
+            double* temp_A_row = A[i]; A[i] = A[pivot_row]; A[pivot_row] = temp_A_row;
+            double temp_b = b[i]; b[i] = b[pivot_row]; b[pivot_row] = temp_b;
+        }
+
+        double pivot_val = A[i][i];
+        if (fabs(pivot_val) < 1e-12) {
+            for(int k=0; k<n; ++k) x[k] = 1.0; 
+            return;
+        }
+
+        for (int j = i; j < n; j++) A[i][j] /= pivot_val;
+        b[i] /= pivot_val;
+
+        for (int j = 0; j < n; j++) {
+            if (i != j) {
+                double factor = A[j][i];
+                for (int k = i; k < n; k++) A[j][k] -= factor * A[i][k];
+                b[j] -= factor * b[i];
+            }
+        }
+    }
+    memcpy(x, b, n * sizeof(double));
+}
+
+void run_computation() {
+    // --- Step 1: Find k-nearest neighbors for each point ---
+    double* neighbor_dist_sq = (double*)malloc(num_neighbors * sizeof(double));
+    for (int i = 0; i < num_points; ++i) {
+        for (int k = 0; k < num_neighbors; ++k) {
+            neighbor_dist_sq[k] = DBL_MAX;
+        }
+
+        for (int j = 0; j < num_points; ++j) {
+            if (i == j) continue;
+            double d_sq = squared_distance(points[i], points[j]);
+
+            if (d_sq < neighbor_dist_sq[num_neighbors - 1]) {
+                int k = num_neighbors - 1;
+                while (k > 0 && d_sq < neighbor_dist_sq[k - 1]) {
+                    neighbor_dist_sq[k] = neighbor_dist_sq[k - 1];
+                    neighbors[i][k] = neighbors[i][k - 1];
+                    k--;
+                }
+                neighbor_dist_sq[k] = d_sq;
+                neighbors[i][k] = j;
+            }
+        }
+    }
+    free(neighbor_dist_sq);
+
+    // --- Step 2: Compute reconstruction weights for each point ---
+    int k = num_neighbors;
+    double** G = alloc_2d_double(k, k);
+    double* b = (double*)malloc(k * sizeof(double));
+    double* w = (double*)malloc(k * sizeof(double));
+    double** Z = alloc_2d_double(k, source_dimension);
+    double** G_copy = alloc_2d_double(k, k);
+    double* b_copy = (double*)malloc(k * sizeof(double));
+
+    for (int i = 0; i < num_points; ++i) {
+        for (int j = 0; j < k; ++j) {
+            int neighbor_idx = neighbors[i][j];
+            for (int d = 0; d < source_dimension; ++d) {
+                Z[j][d] = points[neighbor_idx][d] - points[i][d];
+            }
+        }
+
+        for (int r = 0; r < k; ++r) {
+            for (int c = r; c < k; ++c) {
+                double dot_product = 0.0;
+                for (int d = 0; d < source_dimension; ++d) {
+                    dot_product += Z[r][d] * Z[c][d];
+                }
+                G[r][c] = dot_product;
+                G[c][r] = dot_product;
+            }
+        }
+        
+        double reg = 1e-6;
+        for(int j=0; j<k; ++j) G[j][j] += reg;
+
+        for (int j = 0; j < k; ++j) b[j] = 1.0;
+        
+        memcpy(G_copy[0], G[0], (size_t)k * k * sizeof(double));
+        memcpy(b_copy, b, k * sizeof(double));
+
+        solve_linear_system(G_copy, b_copy, w, k);
+
+        double sum_w = 0.0;
+        for (int j = 0; j < k; ++j) sum_w += w[j];
+
+        if (fabs(sum_w) > 1e-9) {
+            for (int j = 0; j < k; ++j) weights[i][j] = w[j] / sum_w;
+        } else {
+             for (int j = 0; j < k; ++j) weights[i][j] = 1.0 / k;
+        }
+        final_result += sum_w;
+    }
+
+    free_2d((void**)G);
+    free(b);
+    free(w);
+    free_2d((void**)Z);
+    free_2d((void**)G_copy);
+    free(b_copy);
+}
+
+void cleanup() {
+    free_2d((void**)points);
+    free_2d((void**)neighbors);
+    free_2d((void**)weights);
+    free_2d((void**)embedding);
+}
+
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    printf("%f\n", final_result);
+
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

@@ -1,0 +1,1 @@
+lattice_size,num_mc_steps,temperature,seed

@@ -1,0 +1,1 @@
+num_control_points,degree,num_eval_points,seed

@@ -1,0 +1,1 @@
+num_customers,num_vehicles,capacity_per_vehicle,seed

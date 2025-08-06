@@ -1,0 +1,1 @@
+mesh_size_x,mesh_size_y,num_time_steps,seed

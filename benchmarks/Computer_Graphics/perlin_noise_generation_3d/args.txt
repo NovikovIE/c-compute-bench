@@ -1,0 +1,1 @@
+texture_width,texture_height,texture_depth,num_octaves,seed

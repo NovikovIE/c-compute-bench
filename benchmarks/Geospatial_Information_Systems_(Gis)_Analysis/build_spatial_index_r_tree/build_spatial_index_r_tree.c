@@ -1,0 +1,340 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+#include <float.h>
+#include <string.h>
+#include <math.h>
+
+// --- Mersenne Twister (MT19937) Generator ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+             fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+             exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+// --- End of Mersenne Twister ---
+
+// --- R-Tree Benchmark Configuration ---
+#define MAX_CHILDREN 8
+#define MIN_CHILDREN (MAX_CHILDREN / 2)
+#define WORLD_SIZE 10000.0f
+#define FEATURE_MAX_SIZE 10.0f
+
+// --- Data Structures ---
+typedef struct {
+    float min_x, min_y, max_x, max_y;
+} Rectangle;
+
+typedef struct RTreeNode {
+    int count;
+    int level;
+    struct RTreeNode* children[MAX_CHILDREN];
+    Rectangle mbrs[MAX_CHILDREN];
+} RTreeNode;
+
+// --- Global Variables ---
+static int num_features;
+static Rectangle* features;
+static RTreeNode* root = NULL;
+static long long final_result = 0;
+
+// --- Utility Functions ---
+float mt_rand_float() {
+    return (float)mt_rand() / (float)UINT32_MAX;
+}
+
+float rect_area(const Rectangle* r) {
+    return (r->max_x - r->min_x) * (r->max_y - r->min_y);
+}
+
+Rectangle combine_mbrs(const Rectangle* r1, const Rectangle* r2) {
+    Rectangle new_mbr;
+    new_mbr.min_x = fminf(r1->min_x, r2->min_x);
+    new_mbr.min_y = fminf(r1->min_y, r2->min_y);
+    new_mbr.max_x = fmaxf(r1->max_x, r2->max_x);
+    new_mbr.max_y = fmaxf(r1->max_y, r2->max_y);
+    return new_mbr;
+}
+
+float enlargement_cost(const Rectangle* r, const Rectangle* new_item) {
+    if (new_item->min_x >= r->min_x && new_item->max_x <= r->max_x &&
+        new_item->min_y >= r->min_y && new_item->max_y <= r->max_y) {
+        return 0.0f;
+    }
+    Rectangle expanded = combine_mbrs(r, new_item);
+    return rect_area(&expanded) - rect_area(r);
+}
+
+RTreeNode* create_node(int level) {
+    RTreeNode* node = (RTreeNode*)malloc(sizeof(RTreeNode));
+    if (!node) {
+        perror("Failed to allocate RTreeNode");
+        exit(1);
+    }
+    node->count = 0;
+    node->level = level;
+    for(int i = 0; i < MAX_CHILDREN; ++i) {
+        node->children[i] = NULL;
+    }
+    return node;
+}
+
+// Forward declarations for recursive insertion
+RTreeNode* insert_recursive(RTreeNode* node, const Rectangle* new_rect, RTreeNode* new_child);
+RTreeNode* split_node(RTreeNode* node, const Rectangle* new_mbr, RTreeNode* new_child);
+
+void add_child_to_node(RTreeNode* node, const Rectangle* mbr, RTreeNode* child) {
+    node->mbrs[node->count] = *mbr;
+    node->children[node->count] = child;
+    node->count++;
+}
+
+RTreeNode* choose_subtree(RTreeNode* node, const Rectangle* rect) {
+    int best_index = -1;
+    float min_enlargement = FLT_MAX;
+
+    for (int i = 0; i < node->count; i++) {
+        float enlargement = enlargement_cost(&node->mbrs[i], rect);
+        if (enlargement < min_enlargement) {
+            min_enlargement = enlargement;
+            best_index = i;
+        } else if (enlargement == min_enlargement) {
+            if (rect_area(&node->mbrs[i]) < rect_area(&node->mbrs[best_index])) {
+                best_index = i;
+            }
+        }
+    }
+    return node->children[best_index];
+}
+
+Rectangle get_node_mbr(const RTreeNode* node) {
+    if (node->count == 0) {
+        return (Rectangle){0, 0, 0, 0};
+    }
+    Rectangle mbr = node->mbrs[0];
+    for (int i = 1; i < node->count; i++) {
+        mbr = combine_mbrs(&mbr, &node->mbrs[i]);
+    }
+    return mbr;
+}
+
+RTreeNode* split_node(RTreeNode* node, const Rectangle* new_mbr, RTreeNode* new_child) {
+    // Simplified Quadratic Split
+    Rectangle all_mbrs[MAX_CHILDREN + 1];
+    RTreeNode* all_children[MAX_CHILDREN + 1];
+    memcpy(all_mbrs, node->mbrs, node->count * sizeof(Rectangle));
+    memcpy(all_children, node->children, node->count * sizeof(RTreeNode*));
+    all_mbrs[node->count] = *new_mbr;
+    all_children[node->count] = new_child;
+    int total_items = node->count + 1;
+
+    int seed1 = 0, seed2 = 1;
+    float max_waste = -1.0f;
+    for (int i = 0; i < total_items; i++) {
+        for (int j = i + 1; j < total_items; j++) {
+            Rectangle combined = combine_mbrs(&all_mbrs[i], &all_mbrs[j]);
+            float waste = rect_area(&combined) - rect_area(&all_mbrs[i]) - rect_area(&all_mbrs[j]);
+            if (waste > max_waste) {
+                max_waste = waste;
+                seed1 = i; seed2 = j;
+            }
+        }
+    }
+
+    RTreeNode* sibling = create_node(node->level);
+    node->count = 0;
+
+    add_child_to_node(node, &all_mbrs[seed1], all_children[seed1]);
+    add_child_to_node(sibling, &all_mbrs[seed2], all_children[seed2]);
+
+    int assigned_mask[MAX_CHILDREN + 1] = {0};
+    assigned_mask[seed1] = 1;
+    assigned_mask[seed2] = 1;
+
+    for (int i = 0; i < total_items; i++) {
+        if (assigned_mask[i]) continue;
+
+        Rectangle node_mbr = get_node_mbr(node);
+        Rectangle sibling_mbr = get_node_mbr(sibling);
+
+        float node_cost = enlargement_cost(&node_mbr, &all_mbrs[i]);
+        float sibling_cost = enlargement_cost(&sibling_mbr, &all_mbrs[i]);
+        
+        if (node->count >= MIN_CHILDREN && sibling->count < MIN_CHILDREN) {
+             add_child_to_node(sibling, &all_mbrs[i], all_children[i]);
+        } else if (sibling->count >= MIN_CHILDREN && node->count < MIN_CHILDREN) {
+            add_child_to_node(node, &all_mbrs[i], all_children[i]);
+        } else if (node_cost < sibling_cost) {
+            add_child_to_node(node, &all_mbrs[i], all_children[i]);
+        } else {
+            add_child_to_node(sibling, &all_mbrs[i], all_children[i]);
+        }
+    }
+    return sibling;
+}
+
+RTreeNode* insert_recursive(RTreeNode* node, const Rectangle* new_rect, RTreeNode* new_child) {
+    if (node->level > 0) { // Not a leaf
+         RTreeNode* chosen = choose_subtree(node, new_rect); 
+         RTreeNode* split_node_result = insert_recursive(chosen, new_rect, new_child);
+
+         int child_idx = -1;
+         for (int i = 0; i < node->count; ++i) { if (node->children[i] == chosen) { child_idx = i; break; } }
+         node->mbrs[child_idx] = get_node_mbr(chosen);
+
+         if (split_node_result) { // Child was split
+            Rectangle split_mbr = get_node_mbr(split_node_result);
+            if (node->count < MAX_CHILDREN) {
+                add_child_to_node(node, &split_mbr, split_node_result);
+                return NULL;
+            } else {
+                return split_node(node, &split_mbr, split_node_result);
+            }
+         }
+         return NULL;
+    }
+    
+    // Is a leaf node
+    if (node->count < MAX_CHILDREN) {
+        add_child_to_node(node, new_rect, new_child);
+        return NULL;
+    } else {
+        return split_node(node, new_rect, new_child);
+    }
+}
+
+void recursive_free(RTreeNode* node) {
+    if (node == NULL) return;
+    if (node->level > 0) { // Free children only for non-leaf nodes
+        for (int i = 0; i < node->count; i++) {
+            recursive_free(node->children[i]);
+        }
+    }
+    free(node);
+}
+
+long long recursive_checksum(RTreeNode* node) {
+    if (node == NULL) return 0;
+    long long sum = node->count;
+    if (node->level > 0) {
+        for (int i = 0; i < node->count; i++) {
+            sum += recursive_checksum(node->children[i]);
+        }
+    }
+    return sum;
+}
+
+// --- Benchmark Functions ---
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <num_features> <seed>\n", argv[0]);
+        exit(1);
+    }
+    num_features = atoi(argv[1]);
+    uint32_t seed = (uint32_t)atoi(argv[2]);
+
+    if (num_features <= 0) {
+        fprintf(stderr, "Error: num_features must be positive.\n");
+        exit(1);
+    }
+
+    mt_seed(seed);
+
+    features = (Rectangle*)malloc(num_features * sizeof(Rectangle));
+    if (!features) {
+        perror("Failed to allocate memory for features");
+        exit(1);
+    }
+
+    for (int i = 0; i < num_features; i++) {
+        float center_x = mt_rand_float() * WORLD_SIZE;
+        float center_y = mt_rand_float() * WORLD_SIZE;
+        float width = mt_rand_float() * FEATURE_MAX_SIZE + 0.1f;
+        float height = mt_rand_float() * FEATURE_MAX_SIZE + 0.1f;
+        features[i].min_x = center_x - width / 2.0f;
+        features[i].min_y = center_y - height / 2.0f;
+        features[i].max_x = center_x + width / 2.0f;
+        features[i].max_y = center_y + height / 2.0f;
+    }
+
+    root = create_node(0); // Create root as a leaf node initially
+}
+
+void run_computation() {
+    for (int i = 0; i < num_features; i++) {
+        RTreeNode* new_sibling = insert_recursive(root, &features[i], NULL);
+        if (new_sibling) { // Root was split
+            RTreeNode* new_root = create_node(root->level + 1);
+            Rectangle root_mbr = get_node_mbr(root);
+            Rectangle sibling_mbr = get_node_mbr(new_sibling);
+
+            add_child_to_node(new_root, &root_mbr, root);
+            add_child_to_node(new_root, &sibling_mbr, new_sibling);
+
+            root = new_root;
+        }
+    }
+    final_result = recursive_checksum(root);
+}
+
+void cleanup() {
+    recursive_free(root);
+    root = NULL;
+    free(features);
+    features = NULL;
+}
+
+// --- Main --- 
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    printf("%lld\n", final_result);
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

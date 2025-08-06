@@ -1,0 +1,1 @@
+image_width,image_height,num_objects,samples_per_pixel,max_bounces,seed

@@ -1,0 +1,1 @@
+num_amino_acids,num_simulation_steps,seed

@@ -1,0 +1,1 @@
+image_width,image_height,num_samples_per_point,num_objects,seed

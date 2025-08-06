@@ -1,0 +1,1 @@
+num_gates,num_faults,num_test_vectors,num_primary_inputs,seed

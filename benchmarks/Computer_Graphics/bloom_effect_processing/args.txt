@@ -1,0 +1,1 @@
+image_width,image_height,blur_passes,brightness_threshold,seed

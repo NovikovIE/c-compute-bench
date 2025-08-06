@@ -1,0 +1,1 @@
+num_total_points,num_query_points,query_radius,seed

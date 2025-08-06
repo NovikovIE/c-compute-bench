@@ -1,0 +1,1 @@
+image_height,image_width,input_channels,output_channels,kernel_size,stride,seed

@@ -1,0 +1,211 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+#include <math.h>
+
+// --- Mersenne Twister (MT19937) Generator ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+             fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+             exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+
+// --- Benchmark Data Structures ---
+typedef struct {
+    double x, y;
+} Point;
+
+typedef struct {
+    Point left;
+    Point right;
+} Portal;
+
+// --- Global Variables ---
+int num_polygons_in_path;
+int num_portals;
+Point start_point;
+Point end_point;
+Portal* portals = NULL;
+Point* smoothed_path = NULL; 
+int path_count = 0;
+double final_checksum = 0.0;
+
+// --- Helper Functions ---
+double rand_double() {
+    return (double)mt_rand() / (double)UINT32_MAX;
+}
+
+inline double cross_product(Point p1, Point p2, Point p3) {
+    return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x);
+}
+
+// --- Benchmark Functions ---
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <num_polygons_in_path> <seed>\n", argv[0]);
+        exit(1);
+    }
+    num_polygons_in_path = atoi(argv[1]);
+    uint32_t seed = (uint32_t)atoi(argv[2]);
+    mt_seed(seed);
+
+    if (num_polygons_in_path < 2) {
+        num_portals = 0;
+    } else {
+        num_portals = num_polygons_in_path - 1;
+    }
+
+    if (num_portals > 0) {
+        portals = (Portal*)malloc(num_portals * sizeof(Portal));
+    }
+    smoothed_path = (Point*)malloc((num_portals + 2) * sizeof(Point));
+    if ((num_portals > 0 && !portals) || !smoothed_path) {
+        fprintf(stderr, "Memory allocation failed\n");
+        exit(1);
+    }
+
+    double current_x = 10.0;
+    double current_y_center = 0.0;
+    double portal_width = 20.0;
+    double step_x_avg = 5.0;
+
+    for (int i = 0; i < num_portals; i++) {
+        current_y_center += (rand_double() - 0.5) * 2.0; 
+        portals[i].left.x = current_x;
+        portals[i].left.y = current_y_center - portal_width / 2.0 - rand_double() * 5.0;
+        portals[i].right.x = current_x;
+        portals[i].right.y = current_y_center + portal_width / 2.0 + rand_double() * 5.0;
+        current_x += step_x_avg + (rand_double() - 0.5);
+    }
+    
+    start_point = (Point){0.0, 0.0};
+    
+    if (num_portals > 0) {
+        end_point.x = portals[num_portals - 1].left.x + step_x_avg;
+        end_point.y = portals[num_portals - 1].left.y + 
+                      (portals[num_portals - 1].right.y - portals[num_portals - 1].left.y) / 2.0;
+    } else {
+        end_point = (Point){10.0, 0.0};
+    }
+}
+
+void cleanup() {
+    if (portals) free(portals);
+    free(smoothed_path);
+}
+
+void run_computation() {
+    if (num_portals == 0) {
+        smoothed_path[0] = start_point;
+        smoothed_path[1] = end_point;
+        path_count = 2;
+    } else {
+        path_count = 0;
+        smoothed_path[path_count++] = start_point;
+
+        Point apex = start_point;
+        Point funnel_left = portals[0].left;
+        Point funnel_right = portals[0].right;
+        int left_idx = 0;
+        int right_idx = 0;
+
+        for (int i = 1; i <= num_portals; ++i) {
+            Point p_left = (i == num_portals) ? end_point : portals[i].left;
+            Point p_right = (i == num_portals) ? end_point : portals[i].right;
+
+            if (cross_product(apex, funnel_right, p_right) <= 0.0) {
+                if ((apex.x == funnel_right.x && apex.y == funnel_right.y) || cross_product(apex, funnel_left, p_right) > 0.0) {
+                    funnel_right = p_right;
+                    right_idx = i;
+                } else {
+                    apex = funnel_left;
+                    smoothed_path[path_count++] = apex;
+                    i = left_idx; 
+                    funnel_left = apex;
+                    funnel_right = apex;
+                    left_idx = i;
+                    right_idx = i;
+                    continue;
+                }
+            }
+            
+            if(cross_product(apex, funnel_left, p_left) >= 0.0) {
+                if ((apex.x == funnel_left.x && apex.y == funnel_left.y) || cross_product(apex, funnel_right, p_left) < 0.0) {
+                    funnel_left = p_left;
+                    left_idx = i;
+                } else {
+                    apex = funnel_right;
+                    smoothed_path[path_count++] = apex;
+                    i = right_idx;
+                    funnel_left = apex;
+                    funnel_right = apex;
+                    left_idx = i;
+                    right_idx = i;
+                    continue;
+                }
+            }
+        }
+        smoothed_path[path_count++] = end_point;
+    }
+
+    double checksum = 0.0;
+    for (int i = 0; i < path_count; ++i) {
+        checksum += smoothed_path[i].x + smoothed_path[i].y;
+    }
+    final_checksum = checksum;
+}
+
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+    
+    printf("%.2f\n", final_checksum);
+    fprintf(stderr, "%.6f", time_taken);
+
+    cleanup();
+
+    return 0;
+}

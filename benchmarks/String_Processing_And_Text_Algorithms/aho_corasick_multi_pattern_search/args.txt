@@ -1,0 +1,1 @@
+text_length,num_patterns,average_pattern_length,seed

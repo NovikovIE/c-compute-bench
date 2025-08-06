@@ -1,0 +1,1 @@
+events_per_second,pattern_sequence_length,time_window_ms,simulation_duration_s,num_event_types,seed

@@ -1,0 +1,1 @@
+grid_size_x,grid_size_y,num_trials,seed

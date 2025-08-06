@@ -1,0 +1,1 @@
+num_nodes,num_nonlinear_elements,max_iterations,seed

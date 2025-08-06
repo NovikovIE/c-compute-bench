@@ -1,0 +1,1 @@
+num_patches,tessellation_level,seed

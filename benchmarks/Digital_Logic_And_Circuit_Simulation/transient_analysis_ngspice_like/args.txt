@@ -1,0 +1,1 @@
+num_nodes,num_active_elements,simulation_time_end,time_step,seed

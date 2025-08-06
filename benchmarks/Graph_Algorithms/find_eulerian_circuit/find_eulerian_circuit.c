@@ -1,0 +1,226 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+             fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+             exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+
+// --- Benchmark Globals ---
+typedef struct {
+    int num_vertices;
+    int num_extra_triangles;
+    int num_edges;
+
+    // Adjacency list representation
+    int** adj;
+    int* adj_counts;
+    int* adj_capacities;
+    // We need a copy for the computation part to be destructive
+    int** adj_compute;
+    int* adj_counts_compute;
+
+    int* circuit;
+    int circuit_idx;
+
+    long long final_result;
+} BenchmarkData;
+
+static BenchmarkData g_data;
+
+// --- Helper Functions ---
+static void add_edge(int u, int v) {
+    // Add edge for u
+    if (g_data.adj_counts[u] == g_data.adj_capacities[u]) {
+        g_data.adj_capacities[u] = g_data.adj_capacities[u] == 0 ? 8 : g_data.adj_capacities[u] * 2;
+        g_data.adj[u] = (int*)realloc(g_data.adj[u], g_data.adj_capacities[u] * sizeof(int));
+        if (!g_data.adj[u]) { perror("realloc failed"); exit(1); }
+    }
+    g_data.adj[u][g_data.adj_counts[u]++] = v;
+
+    // Add edge for v
+    if (g_data.adj_counts[v] == g_data.adj_capacities[v]) {
+        g_data.adj_capacities[v] = g_data.adj_capacities[v] == 0 ? 8 : g_data.adj_capacities[v] * 2;
+        g_data.adj[v] = (int*)realloc(g_data.adj[v], g_data.adj_capacities[v] * sizeof(int));
+        if (!g_data.adj[v]) { perror("realloc failed"); exit(1); }
+    }
+    g_data.adj[v][g_data.adj_counts[v]++] = u;
+}
+
+// --- Benchmark Functions ---
+void setup_benchmark(int argc, char* argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s num_vertices num_extra_triangles seed\n", argv[0]);
+        exit(1);
+    }
+
+    g_data.num_vertices = atoi(argv[1]);
+    g_data.num_extra_triangles = atoi(argv[2]);
+    uint32_t seed = atoi(argv[3]);
+
+    mt_seed(seed);
+
+    g_data.adj = (int**)calloc(g_data.num_vertices, sizeof(int*));
+    g_data.adj_counts = (int*)calloc(g_data.num_vertices, sizeof(int));
+    g_data.adj_capacities = (int*)calloc(g_data.num_vertices, sizeof(int));
+    if (!g_data.adj || !g_data.adj_counts || !g_data.adj_capacities) {
+        perror("Failed to allocate graph pointers");
+        exit(1);
+    }
+
+    // Create a Hamiltonian cycle to ensure all vertices are connected and have even degree (2)
+    for (int i = 0; i < g_data.num_vertices; ++i) {
+        add_edge(i, (i + 1) % g_data.num_vertices);
+    }
+
+    // Add random triangles to increase complexity while keeping degrees even
+    for (int i = 0; i < g_data.num_extra_triangles; ++i) {
+        int u = mt_rand() % g_data.num_vertices;
+        int v = mt_rand() % g_data.num_vertices;
+        int w = mt_rand() % g_data.num_vertices;
+        if (u == v || u == w || v == w) { // ensure distinct vertices
+            i--;
+            continue;
+        }
+        add_edge(u, v);
+        add_edge(v, w);
+        add_edge(w, u);
+    }
+
+    g_data.num_edges = 0;
+    for(int i = 0; i < g_data.num_vertices; ++i) g_data.num_edges += g_data.adj_counts[i];
+    g_data.num_edges /= 2; // Each edge counted twice
+
+    g_data.circuit = (int*)malloc((g_data.num_edges + 1) * sizeof(int));
+    if (!g_data.circuit) { perror("Failed to allocate circuit array"); exit(1); }
+
+    // Create a disposable copy of graph for computation
+    g_data.adj_compute = (int**)malloc(g_data.num_vertices * sizeof(int*));
+    g_data.adj_counts_compute = (int*)malloc(g_data.num_vertices * sizeof(int));
+    if (!g_data.adj_compute || !g_data.adj_counts_compute) { perror("Failed to allocate compute graph"); exit(1); }
+
+    for (int i = 0; i < g_data.num_vertices; ++i) {
+        g_data.adj_counts_compute[i] = g_data.adj_counts[i];
+        size_t size = g_data.adj_counts[i] * sizeof(int);
+        if (size > 0) {
+            g_data.adj_compute[i] = (int*)malloc(size);
+            if (!g_data.adj_compute[i]) { perror("Failed to copy adjacency list"); exit(1); }
+            for(int j=0; j<g_data.adj_counts[i]; ++j) g_data.adj_compute[i][j] = g_data.adj[i][j];
+        } else {
+            g_data.adj_compute[i] = NULL;
+        }
+    }
+}
+
+void run_computation() {
+    int* stack = (int*)malloc((g_data.num_edges + 1) * sizeof(int));
+    if (!stack) { perror("Failed to allocate stack"); exit(1); }
+    int stack_top = 0;
+
+    g_data.circuit_idx = 0;
+
+    // Start at vertex 0
+    stack[stack_top++] = 0;
+
+    while (stack_top > 0) {
+        int u = stack[stack_top - 1];
+        if (g_data.adj_counts_compute[u] > 0) {
+            // Pop an edge (u,v) from u's adjacency list
+            int v = g_data.adj_compute[u][--g_data.adj_counts_compute[u]];
+
+            // Find and remove the reverse edge (v,u) from v's adjacency list.
+            // This is crucial for undirected graphs to prevent traversing an edge back.
+            // Failure to do this causes the algorithm to fail and the stack to overflow.
+            for (int i = 0; i < g_data.adj_counts_compute[v]; i++) {
+                if (g_data.adj_compute[v][i] == u) {
+                    // To "remove" u, we swap it with the last element and decrement the count.
+                    g_data.adj_compute[v][i] = g_data.adj_compute[v][--g_data.adj_counts_compute[v]];
+                    break;
+                }
+            }
+            
+            stack[stack_top++] = v;
+        } else {
+            stack_top--;
+            g_data.circuit[g_data.circuit_idx++] = u;
+        }
+    }
+
+    // Calculate final result to prevent dead code elimination
+    g_data.final_result = 0;
+    for (int i = 0; i < g_data.circuit_idx; ++i) {
+        g_data.final_result += (long long)g_data.circuit[i] * (i + 1);
+    }
+
+    free(stack);
+}
+
+void cleanup() {
+    for (int i = 0; i < g_data.num_vertices; ++i) {
+        free(g_data.adj[i]);
+        free(g_data.adj_compute[i]);
+    }
+    free(g_data.adj);
+    free(g_data.adj_counts);
+    free(g_data.adj_capacities);
+    free(g_data.adj_compute);
+    free(g_data.adj_counts_compute);
+    free(g_data.circuit);
+}
+
+int main(int argc, char* argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    printf("%lld\n", g_data.final_result);
+    fprintf(stderr, "%.6f", time_taken);
+
+    cleanup();
+
+    return 0;
+}

@@ -1,0 +1,1 @@
+num_reads,read_length,kmer_size,seed

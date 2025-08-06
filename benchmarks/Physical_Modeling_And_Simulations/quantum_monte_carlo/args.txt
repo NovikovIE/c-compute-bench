@@ -1,0 +1,1 @@
+num_walkers,num_time_steps,num_dimensions,seed

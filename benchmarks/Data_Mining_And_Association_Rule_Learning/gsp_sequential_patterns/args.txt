@@ -1,0 +1,1 @@
+num_sequences,avg_sequence_length,num_unique_items,min_support_threshold,seed

@@ -1,0 +1,1 @@
+grid_width,grid_height,num_obstacles,max_iterations,seed

@@ -1,0 +1,1 @@
+function_str,poly_degree,initial_guess,tolerance,seed

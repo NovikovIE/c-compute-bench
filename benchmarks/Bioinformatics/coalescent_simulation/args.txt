@@ -1,0 +1,1 @@
+sample_size,num_loci,num_generations,seed

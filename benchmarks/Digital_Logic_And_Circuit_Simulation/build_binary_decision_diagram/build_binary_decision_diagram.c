@@ -1,0 +1,248 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+#include <string.h>
+
+// --- Mersenne Twister (MT19937) Generator ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+                fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+                exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+// --- End of Mersenne Twister ---
+
+// --- Benchmark Data Structures ---
+typedef struct {
+    int var;  // Variable index
+    int low;  // 'if false' child node ID
+    int high; // 'if true' child node ID
+} BDDNode;
+
+typedef struct {
+    // Parameters
+    int num_variables;
+    size_t boolean_function_complexity;
+
+    // Data
+    uint8_t* truth_table;
+    size_t tt_size;
+
+    BDDNode* nodes;
+    size_t nodes_capacity;
+    volatile int next_node_id; // Total number of unique nodes created
+
+    int* unique_table;
+    size_t unique_table_size;
+
+    int *layer_a, *layer_b;
+
+} BenchmarkState;
+
+BenchmarkState g_state;
+
+// --- BDD Core Logic ---
+
+// Simple hashing for {var, low, high} tuple
+static inline uint32_t hash_node(int var, int low, int high) {
+    uint32_t hash = 2166136261u;
+    hash = (hash * 16777619u) ^ var;
+    hash = (hash * 16777619u) ^ low;
+    hash = (hash * 16777619u) ^ high;
+    return hash;
+}
+
+// Creates a new node or finds an existing equivalent node.
+int create_or_find_node(int var, int low, int high) {
+    // Reduction rule: if both branches point to the same node, this node is redundant.
+    if (low == high) {
+        return low;
+    }
+
+    uint32_t hash = hash_node(var, low, high);
+    uint32_t index = hash & (g_state.unique_table_size - 1);
+
+    // Linear probing to find the node or an empty slot
+    while (g_state.unique_table[index] != -1) {
+        int node_id = g_state.unique_table[index];
+        if (g_state.nodes[node_id].var == var &&
+            g_state.nodes[node_id].low == low &&
+            g_state.nodes[node_id].high == high) {
+            return node_id; // Found existing node
+        }
+        index = (index + 1) & (g_state.unique_table_size - 1); // Wraparound
+    }
+
+    // Create a new node
+    int new_id = g_state.next_node_id++;
+    if ((size_t)new_id >= g_state.nodes_capacity) {
+        fprintf(stderr, "FATAL: Node buffer overflow\n");
+        exit(1);
+    }
+    g_state.nodes[new_id] = (BDDNode){ .var = var, .low = low, .high = high };
+    g_state.unique_table[index] = new_id;
+    return new_id;
+}
+
+// --- Benchmark Functions ---
+
+void setup_benchmark(int argc, char* argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s <num_variables> <boolean_function_complexity> <seed>\n", argv[0]);
+        exit(1);
+    }
+
+    g_state.num_variables = atoi(argv[1]);
+    g_state.boolean_function_complexity = atol(argv[2]);
+    uint32_t seed = atoi(argv[3]);
+
+    if (g_state.num_variables <= 0 || g_state.num_variables > 30) {
+        fprintf(stderr, "FATAL: num_variables must be between 1 and 30.\n");
+        exit(1);
+    }
+
+    mt_seed(seed);
+
+    g_state.tt_size = 1ULL << g_state.num_variables;
+    g_state.truth_table = (uint8_t*)calloc(g_state.tt_size, sizeof(uint8_t));
+    if (!g_state.truth_table) {
+        fprintf(stderr, "FATAL: Failed to allocate truth table.\n");
+        exit(1);
+    }
+
+    // Populate truth table with random '1's
+    size_t complexity = g_state.boolean_function_complexity;
+    if (complexity > g_state.tt_size) complexity = g_state.tt_size;
+    for (size_t i = 0; i < complexity; ++i) {
+        size_t pos;
+        do {
+            pos = mt_rand() % g_state.tt_size;
+        } while (g_state.truth_table[pos]); // Ensure we set a unique position
+        g_state.truth_table[pos] = 1;
+    }
+
+    // Allocate memory for BDD nodes and unique table
+    // The original heuristic for node capacity was too optimistic for complex functions,
+    // especially random ones. A BDD for a random function on n variables can require
+    // a number of nodes on the order of 2^n / n. The original formula's divisor
+    // grew with n, incorrectly reducing the relative allocation size for larger problems.
+    // A more robust heuristic is to allocate a fixed fraction of the truth table size.
+    // A divisor of 4 provides a good balance, preventing overflow for hard cases
+    // without excessive memory usage.
+    g_state.nodes_capacity = g_state.tt_size / 4 + 2;
+    if (g_state.nodes_capacity < 256) g_state.nodes_capacity = 256;
+
+    g_state.nodes = (BDDNode*)malloc(g_state.nodes_capacity * sizeof(BDDNode));
+    
+    size_t ut_size = 1;
+    while(ut_size < g_state.nodes_capacity * 2) ut_size <<= 1;
+    g_state.unique_table_size = ut_size;
+    g_state.unique_table = (int*)malloc(g_state.unique_table_size * sizeof(int));
+
+    g_state.layer_a = (int*)malloc(g_state.tt_size * sizeof(int));
+    g_state.layer_b = (int*)malloc(g_state.tt_size * sizeof(int));
+
+    if (!g_state.nodes || !g_state.unique_table || !g_state.layer_a || !g_state.layer_b) {
+        fprintf(stderr, "FATAL: Memory allocation failed for BDD structures.\n");
+        exit(1);
+    }
+
+    // Initialize unique table with -1 (empty marker)
+    memset(g_state.unique_table, -1, g_state.unique_table_size * sizeof(int));
+
+    // BDDs have two terminal nodes: 0 and 1. They don't need real node entries.
+    // We use IDs 0 and 1 for them. Our created nodes start at ID 2.
+    g_state.next_node_id = 2;
+}
+
+void run_computation() {
+    // Layer 0 of the reduction process is the truth table itself.
+    // `current_layer` will hold node IDs.
+    size_t current_layer_size = g_state.tt_size;
+    int *current_layer = g_state.layer_a;
+    int *next_layer = g_state.layer_b;
+
+    for (size_t i = 0; i < current_layer_size; ++i) {
+        current_layer[i] = g_state.truth_table[i];
+    }
+
+    // Bottom-up construction of the BDD
+    for (int level = g_state.num_variables - 1; level >= 0; --level) {
+        size_t next_layer_size = current_layer_size / 2;
+        for (size_t i = 0; i < next_layer_size; ++i) {
+            int low_node = current_layer[2 * i];
+            int high_node = current_layer[2 * i + 1];
+            next_layer[i] = create_or_find_node(level, low_node, high_node);
+        }
+
+        // Swap layers for the next iteration
+        int* temp = current_layer;
+        current_layer = next_layer;
+        next_layer = temp;
+        current_layer_size = next_layer_size;
+    }
+}
+
+void cleanup() {
+    free(g_state.truth_table);
+    free(g_state.nodes);
+    free(g_state.unique_table);
+    free(g_state.layer_a);
+    free(g_state.layer_b);
+}
+
+int main(int argc, char* argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    // The number of unique nodes created is a good measure of the result.
+    printf("%d\n", g_state.next_node_id);
+
+    fprintf(stderr, "%.6f", time_taken);
+
+    cleanup();
+
+    return 0;
+}

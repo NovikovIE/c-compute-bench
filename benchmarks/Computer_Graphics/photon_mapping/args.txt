@@ -1,0 +1,1 @@
+image_width,image_height,num_photons_to_emit,k_nearest_neighbors,seed

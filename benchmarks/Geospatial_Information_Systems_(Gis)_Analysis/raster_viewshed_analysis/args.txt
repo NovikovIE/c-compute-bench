@@ -1,0 +1,1 @@
+dem_width,dem_height,num_observer_points,seed

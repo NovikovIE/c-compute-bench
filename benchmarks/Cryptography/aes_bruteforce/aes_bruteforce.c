@@ -1,0 +1,378 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <time.h>
+
+// ==========================================================================
+// START of public domain AES implementation by "kokke"
+// Source: https://github.com/kokke/tiny-AES-c
+// This is a public domain C implementation of the AES cipher.
+// ==========================================================================
+
+// #define the macros below to 1/0 to enable/disable the mode of operation.
+// CBC enables AES encryption in CBC-mode of operation.
+// ECB enables the basic ECB 16-byte block algorithm.
+
+#ifndef CBC
+  #define CBC 1
+#endif
+
+#ifndef ECB
+  #define ECB 1
+#endif
+
+#define AES128 1
+
+#define AES_BLOCKLEN 16 // Block length in bytes - AES is 128 bit block only
+#define AES_KEYLEN 16   // Key length in bytes
+#define AES_keyExpSize 176
+
+struct AES_ctx
+{
+  uint8_t RoundKey[AES_keyExpSize];
+};
+
+static const uint8_t sbox[256] = {
+  //0     1    2      3     4    5     6     7      8    9     A      B    C     D     E     F
+  0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+  0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+  0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+  0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+  0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+  0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+  0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+  0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+  0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+  0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+  0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+  0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+  0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+  0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+  0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+  0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16 };
+
+static const uint8_t Rcon[11] = { 0x8d, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36 };
+
+#define getSBoxValue(num) (sbox[(num)])
+
+static void KeyExpansion(uint8_t* RoundKey, const uint8_t* Key)
+{
+  unsigned i, j, k;
+  uint8_t tempa[4]; 
+  for (i = 0; i < 4; ++i)
+  {
+    RoundKey[i * 4 + 0] = Key[i * 4 + 0];
+    RoundKey[i * 4 + 1] = Key[i * 4 + 1];
+    RoundKey[i * 4 + 2] = Key[i * 4 + 2];
+    RoundKey[i * 4 + 3] = Key[i * 4 + 3];
+  }
+  for (i = 4; i < 4 * (10 + 1); ++i)
+  {
+    k = (i - 1) * 4;
+    tempa[0]=RoundKey[k + 0];
+    tempa[1]=RoundKey[k + 1];
+    tempa[2]=RoundKey[k + 2];
+    tempa[3]=RoundKey[k + 3];
+
+    if (i % 4 == 0)
+    {
+      k = tempa[0];
+      tempa[0] = tempa[1];
+      tempa[1] = tempa[2];
+      tempa[2] = tempa[3];
+      tempa[3] = k;
+
+      tempa[0] = getSBoxValue(tempa[0]);
+      tempa[1] = getSBoxValue(tempa[1]);
+      tempa[2] = getSBoxValue(tempa[2]);
+      tempa[3] = getSBoxValue(tempa[3]);
+
+      tempa[0] = tempa[0] ^ Rcon[i/4];
+    }
+
+    j = i * 4;
+    k = (i - 4) * 4;
+    RoundKey[j + 0] = RoundKey[k + 0] ^ tempa[0];
+    RoundKey[j + 1] = RoundKey[k + 1] ^ tempa[1];
+    RoundKey[j + 2] = RoundKey[k + 2] ^ tempa[2];
+    RoundKey[j + 3] = RoundKey[k + 3] ^ tempa[3];
+  }
+}
+
+void AES_init_ctx(struct AES_ctx* ctx, const uint8_t* key)
+{
+  KeyExpansion(ctx->RoundKey, key);
+}
+
+static void AddRoundKey(uint8_t round, uint8_t state[][4], const uint8_t* RoundKey)
+{
+  uint8_t i,j;
+  for (i = 0; i < 4; ++i)
+  {
+    for (j = 0; j < 4; ++j)
+    {
+      state[i][j] ^= RoundKey[round * 16 + i * 4 + j];
+    }
+  }
+}
+
+static void SubBytes(uint8_t state[][4])
+{
+  uint8_t i, j;
+  for (i = 0; i < 4; ++i)
+  {
+    for (j = 0; j < 4; ++j)
+    {
+      state[j][i] = getSBoxValue(state[j][i]);
+    }
+  }
+}
+
+static void ShiftRows(uint8_t state[][4])
+{
+  uint8_t temp;
+  temp           = state[0][1];
+  state[0][1] = state[1][1];
+  state[1][1] = state[2][1];
+  state[2][1] = state[3][1];
+  state[3][1] = temp;
+
+  temp           = state[0][2];
+  state[0][2] = state[2][2];
+  state[2][2] = temp;
+  temp           = state[1][2];
+  state[1][2] = state[3][2];
+  state[3][2] = temp;
+
+  temp           = state[0][3];
+  state[0][3] = state[3][3];
+  state[3][3] = state[2][3];
+  state[2][3] = state[1][3];
+  state[1][3] = temp;
+}
+
+#define xtime(x)  ((x<<1) ^ (((x>>7) & 1) * 0x1b))
+
+static void MixColumns(uint8_t state[][4])
+{
+  uint8_t i;
+  uint8_t Tmp, Tm, t;
+  for (i = 0; i < 4; ++i)
+  {
+    t   = state[i][0];
+    Tmp = state[i][0] ^ state[i][1] ^ state[i][2] ^ state[i][3];
+    Tm  = state[i][0] ^ state[i][1]; Tm = xtime(Tm); state[i][0] ^= Tm ^ Tmp;
+    Tm  = state[i][1] ^ state[i][2]; Tm = xtime(Tm); state[i][1] ^= Tm ^ Tmp;
+    Tm  = state[i][2] ^ state[i][3]; Tm = xtime(Tm); state[i][2] ^= Tm ^ Tmp;
+    Tm  = state[i][3] ^ t;              Tm = xtime(Tm); state[i][3] ^= Tm ^ Tmp;
+  }
+}
+
+static void Cipher(uint8_t state[][4], const uint8_t* RoundKey)
+{
+  uint8_t round = 0;
+  AddRoundKey(0, state, RoundKey);
+  for (round = 1; round < 10; ++round)
+  {
+    SubBytes(state);
+    ShiftRows(state);
+    MixColumns(state);
+    AddRoundKey(round, state, RoundKey);
+  }
+  SubBytes(state);
+  ShiftRows(state);
+  AddRoundKey(10, state, RoundKey);
+}
+
+void AES_ECB_encrypt(const struct AES_ctx* ctx, uint8_t* buf)
+{
+  Cipher((uint8_t(*)[4])buf, ctx->RoundKey);
+}
+
+// ==========================================================================
+// END of public domain AES implementation
+// ==========================================================================
+
+
+
+// ==========================================================================
+// START of Mersenne Twister (MT19937) implementation
+// ==========================================================================
+
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+                fprintf(stderr, "FATAL: Mersenne Twister not seeded.\n");
+                exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+
+// ==========================================================================
+// END of Mersenne Twister (MT19937) implementation
+// ==========================================================================
+
+
+// Benchmark-specific global variables
+static int g_key_space_bits_to_search;
+static size_t g_plaintext_size_bytes;
+static size_t g_padded_plaintext_size;
+static uint64_t g_search_space_size;
+
+static uint8_t* g_plaintext = NULL;
+static uint8_t* g_target_ciphertext = NULL;
+static uint8_t g_target_key[AES_KEYLEN];
+
+static int found_key_count = 0;
+
+
+// Setup function: parses arguments, allocates memory, and generates data
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s <key_space_bits_to_search> <plaintext_size_bytes> <seed>\n", argv[0]);
+        exit(1);
+    }
+
+    g_key_space_bits_to_search = atoi(argv[1]);
+    g_plaintext_size_bytes = atol(argv[2]);
+    uint32_t seed = atol(argv[3]);
+
+    if (g_key_space_bits_to_search <= 0 || g_key_space_bits_to_search > 30) {
+        fprintf(stderr, "FATAL: key_space_bits_to_search must be between 1 and 30.\n");
+        exit(1);
+    }
+    
+    if (g_plaintext_size_bytes == 0) {
+        fprintf(stderr, "FATAL: plaintext_size_bytes must be greater than 0.\n");
+        exit(1);
+    }
+
+    mt_seed(seed);
+
+    // Pad plaintext size to be a multiple of the AES block size (16 bytes)
+    g_padded_plaintext_size = (g_plaintext_size_bytes + AES_BLOCKLEN - 1) & ~(AES_BLOCKLEN - 1);
+
+    g_search_space_size = 1ULL << g_key_space_bits_to_search;
+
+    // Allocate memory
+    g_plaintext = (uint8_t*)malloc(g_padded_plaintext_size);
+    g_target_ciphertext = (uint8_t*)malloc(g_padded_plaintext_size);
+    if (!g_plaintext || !g_target_ciphertext) {
+        fprintf(stderr, "FATAL: Memory allocation failed.\n");
+        exit(1);
+    }
+
+    // Generate random plaintext
+    for (size_t i = 0; i < g_padded_plaintext_size; ++i) {
+        g_plaintext[i] = mt_rand() & 0xFF;
+    }
+
+    // Generate the "secret" target key within the search space
+    uint64_t secret_key_val = ((uint64_t)mt_rand() << 32 | mt_rand()) % g_search_space_size;
+    memset(g_target_key, 0, AES_KEYLEN);
+    memcpy(g_target_key, &secret_key_val, sizeof(secret_key_val));
+
+    // Encrypt the plaintext with the target key to get the target ciphertext
+    struct AES_ctx ctx;
+    AES_init_ctx(&ctx, g_target_key);
+    memcpy(g_target_ciphertext, g_plaintext, g_padded_plaintext_size);
+    // Encrypt in-place in blocks of 16 bytes
+    for (size_t i = 0; i < g_padded_plaintext_size; i += AES_BLOCKLEN) {
+        AES_ECB_encrypt(&ctx, g_target_ciphertext + i);
+    }
+}
+
+// Computation function: performs the brute-force search
+void run_computation() {
+    uint8_t candidate_key[AES_KEYLEN];
+    uint8_t* candidate_ciphertext = (uint8_t*)malloc(g_padded_plaintext_size);
+    if (!candidate_ciphertext) {
+        fprintf(stderr, "FATAL: Memory allocation failed in computation.\n");
+        exit(1);
+    }
+
+    struct AES_ctx ctx;
+    found_key_count = 0;
+
+    for (uint64_t i = 0; i < g_search_space_size; ++i) {
+        // Create the candidate key from the loop counter 'i'
+        memset(candidate_key, 0, AES_KEYLEN);
+        memcpy(candidate_key, &i, sizeof(i));
+
+        // Encrypt the known plaintext with the candidate key
+        AES_init_ctx(&ctx, candidate_key);
+        memcpy(candidate_ciphertext, g_plaintext, g_padded_plaintext_size);
+        for (size_t j = 0; j < g_padded_plaintext_size; j += AES_BLOCKLEN) {
+            AES_ECB_encrypt(&ctx, candidate_ciphertext + j);
+        }
+
+        // Check if the generated ciphertext matches the target
+        if (memcmp(g_target_ciphertext, candidate_ciphertext, g_padded_plaintext_size) == 0) {
+            found_key_count = 1;
+            break; // Key found, exit loop
+        }
+    }
+    
+    free(candidate_ciphertext);
+}
+
+// Cleanup function: frees allocated memory
+void cleanup() {
+    if (g_plaintext) free(g_plaintext);
+    if (g_target_ciphertext) free(g_target_ciphertext);
+}
+
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    // Print the result to stdout
+    printf("%d\n", found_key_count);
+
+    // Print the time to stderr
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

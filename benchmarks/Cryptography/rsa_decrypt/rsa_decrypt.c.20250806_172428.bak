@@ -1,0 +1,293 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <time.h>
+
+// NOTE: This code uses the __int128_t type, a non-standard extension
+// supported by GCC and Clang. This is used for simpler and faster 64x64-bit
+// multiplication, which is central to the bignum arithmetic in this benchmark.
+
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+             fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+             exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+
+// --- BENCHMARK DATA AND PARAMETERS ---
+typedef struct {
+    int key_bit_length;
+    int data_size_bytes;
+    int num_limbs;
+    int num_blocks;
+    uint64_t *n; // Modulus
+    uint64_t *d; // Private exponent
+    uint64_t **ciphertext_blocks;
+    uint64_t **plaintext_blocks;
+    uint64_t result_accumulator;
+} BenchmarkData;
+
+static BenchmarkData g_data;
+
+// --- BIGNUM ARITHMETIC HELPERS ---
+
+// Copies a bignum
+static void bignum_copy(uint64_t *dest, const uint64_t *src, int limbs) {
+    memcpy(dest, src, limbs * sizeof(uint64_t));
+}
+
+// Checks if a bignum is zero
+static int bignum_is_zero(const uint64_t *a, int limbs) {
+    for (int i = 0; i < limbs; i++) {
+        if (a[i] != 0) return 0;
+    }
+    return 1;
+}
+
+// Gets the n-th bit of a bignum
+static int bignum_get_bit(const uint64_t *a, int n) {
+    return (a[n / 64] >> (n % 64)) & 1;
+}
+
+// Compares two bignums. Returns >0 if a>b, <0 if a<b, 0 if a==b.
+static int bignum_cmp(const uint64_t *a, const uint64_t *b, int limbs) {
+    for (int i = limbs - 1; i >= 0; i--) {
+        if (a[i] > b[i]) return 1;
+        if (a[i] < b[i]) return -1;
+    }
+    return 0;
+}
+
+// Shifts a bignum right by one bit.
+static void bignum_shift_right_one(uint64_t *a, int limbs) {
+    for (int i = 0; i < limbs - 1; i++) {
+        a[i] = (a[i] >> 1) | (a[i + 1] << 63);
+    }
+    a[limbs - 1] >>= 1;
+}
+
+// Shifts a bignum left by one bit.
+static void bignum_shift_left_one(uint64_t *a, int limbs) {
+    for (int i = limbs - 1; i > 0; i--) {
+        a[i] = (a[i] << 1) | (a[i - 1] >> 63);
+    }
+    a[0] <<= 1;
+}
+
+// Subtraction: res = a - b. Assumes a >= b.
+static void bignum_sub(const uint64_t *a, const uint64_t *b, uint64_t *res, int limbs) {
+    __int128_t borrow = 0;
+    for (int i = 0; i < limbs; i++) {
+        __int128_t diff = (__int128_t)a[i] - b[i] - borrow;
+        res[i] = (uint64_t)diff;
+        borrow = (diff < 0) ? 1 : 0;
+    }
+}
+
+// Multiplication: res = a * b. `res` must have 2 * `limbs` space.
+static void bignum_mul(const uint64_t *a, const uint64_t *b, uint64_t *res, int limbs) {
+    memset(res, 0, 2 * limbs * sizeof(uint64_t));
+    for (int i = 0; i < limbs; i++) {
+        uint64_t carry = 0;
+        for (int j = 0; j < limbs; j++) {
+            __int128_t product = (__int128_t)a[i] * b[j] + res[i + j] + carry;
+            res[i + j] = (uint64_t)product;
+            carry = product >> 64;
+        }
+        res[i + limbs] += carry;
+    }
+}
+
+// Modulo: res = num % mod. `num` is 2*`limbs`, `mod` and `res` are `limbs`.
+// Uses binary restoring division.
+static void bignum_mod(const uint64_t *num, const uint64_t *mod, uint64_t *res, int limbs) {
+    uint64_t *rem = (uint64_t*)calloc(2 * limbs, sizeof(uint64_t));
+    uint64_t *d = (uint64_t*)calloc(2 * limbs, sizeof(uint64_t));
+    bignum_copy(d, mod, limbs);
+
+    for (int i = 2 * limbs * 64 - 1; i >= 0; i--) {
+        bignum_shift_left_one(rem, 2 * limbs);
+        if (bignum_get_bit(num, i)) {
+            rem[0] |= 1;
+        }
+        if (bignum_cmp(rem, d, 2 * limbs) >= 0) {
+            bignum_sub(rem, d, rem, 2 * limbs);
+        }
+    }
+    bignum_copy(res, rem, limbs);
+    free(rem);
+    free(d);
+}
+
+// Modular exponentiation: res = base^exp % mod.
+static void bignum_mod_pow(const uint64_t *base, const uint64_t *exp, const uint64_t *mod, uint64_t *res, int limbs) {
+    uint64_t *current_power = (uint64_t*) malloc(limbs * sizeof(uint64_t));
+    uint64_t *temp_exp = (uint64_t*) malloc(limbs * sizeof(uint64_t));
+    uint64_t *temp_mul_res = (uint64_t*) malloc(2 * limbs * sizeof(uint64_t));
+
+    // Reduce base if it's larger than modulus
+    bignum_mod(base, mod, current_power, limbs);
+    bignum_copy(temp_exp, exp, limbs);
+
+    // Initialize result to 1
+    memset(res, 0, limbs * sizeof(uint64_t));
+    res[0] = 1;
+
+    for (int i = 0; i < limbs * 64; ++i) {
+        // If current bit of exponent is 1, res = (res * current_power) % mod
+        if (bignum_get_bit(temp_exp, i)) {
+            bignum_mul(res, current_power, temp_mul_res, limbs);
+            bignum_mod(temp_mul_res, mod, res, limbs);
+        }
+        // current_power = (current_power * current_power) % mod
+        bignum_mul(current_power, current_power, temp_mul_res, limbs);
+        bignum_mod(temp_mul_res, mod, current_power, limbs);
+    }
+
+    free(current_power);
+    free(temp_exp);
+    free(temp_mul_res);
+}
+
+// --- BENCHMARK FUNCTIONS ---
+
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s key_bit_length data_size_bytes seed\n", argv[0]);
+        exit(1);
+    }
+
+    g_data.key_bit_length = atoi(argv[1]);
+    g_data.data_size_bytes = atoi(argv[2]);
+    uint32_t seed = atoi(argv[3]);
+    mt_seed(seed);
+
+    g_data.num_limbs = (g_data.key_bit_length + 63) / 64;
+    int key_byte_length = (g_data.key_bit_length + 7) / 8;
+    if (g_data.data_size_bytes % key_byte_length != 0) {
+        fprintf(stderr, "FATAL: data_size_bytes must be a multiple of key_byte_length\n");
+        exit(1);
+    }
+    g_data.num_blocks = g_data.data_size_bytes / key_byte_length;
+
+    g_data.n = (uint64_t*)malloc(g_data.num_limbs * sizeof(uint64_t));
+    g_data.d = (uint64_t*)malloc(g_data.num_limbs * sizeof(uint64_t));
+
+    // Generate random keys n and d
+    for (int i = 0; i < g_data.num_limbs; i++) {
+        g_data.n[i] = ((uint64_t)mt_rand() << 32) | mt_rand();
+        g_data.d[i] = ((uint64_t)mt_rand() << 32) | mt_rand();
+    }
+    
+    // Ensure n and d have the correct bit length
+    int top_limb_bits = g_data.key_bit_length % 64;
+    if (top_limb_bits == 0) top_limb_bits = 64;
+    uint64_t mask = (1ULL << (top_limb_bits - 1));
+    g_data.n[g_data.num_limbs - 1] |= mask; // Set MSB
+    g_data.d[g_data.num_limbs - 1] |= mask;
+    if (top_limb_bits < 64) {
+        mask = (1ULL << top_limb_bits) - 1;
+        g_data.n[g_data.num_limbs - 1] &= mask; // Clear higher bits
+        g_data.d[g_data.num_limbs - 1] &= mask;
+    }
+    g_data.n[0] |= 1; // Ensure modulus is odd
+
+    // Allocate and generate ciphertext blocks
+    g_data.ciphertext_blocks = (uint64_t**)malloc(g_data.num_blocks * sizeof(uint64_t*));
+    g_data.plaintext_blocks = (uint64_t**)malloc(g_data.num_blocks * sizeof(uint64_t*));
+
+    for (int i = 0; i < g_data.num_blocks; i++) {
+        g_data.ciphertext_blocks[i] = (uint64_t*)malloc(g_data.num_limbs * sizeof(uint64_t));
+        g_data.plaintext_blocks[i] = (uint64_t*)malloc(g_data.num_limbs * sizeof(uint64_t));
+        for (int j = 0; j < g_data.num_limbs; j++) {
+            g_data.ciphertext_blocks[i][j] = ((uint64_t)mt_rand() << 32) | mt_rand();
+        }
+        // Ensure ciphertext < n via a single modulo op
+        bignum_mod(g_data.ciphertext_blocks[i], g_data.n, g_data.ciphertext_blocks[i], g_data.num_limbs);
+    }
+
+    g_data.result_accumulator = 0;
+}
+
+void run_computation() {
+    for (int i = 0; i < g_data.num_blocks; i++) {
+        bignum_mod_pow(
+            g_data.ciphertext_blocks[i],
+            g_data.d,
+            g_data.n,
+            g_data.plaintext_blocks[i],
+            g_data.num_limbs
+        );
+        // Accumulate result to prevent dead code elimination
+        g_data.result_accumulator ^= g_data.plaintext_blocks[i][0];
+    }
+}
+
+void cleanup() {
+    free(g_data.n);
+    free(g_data.d);
+
+    for (int i = 0; i < g_data.num_blocks; i++) {
+        free(g_data.ciphertext_blocks[i]);
+        free(g_data.plaintext_blocks[i]);
+    }
+    free(g_data.ciphertext_blocks);
+    free(g_data.plaintext_blocks);
+}
+
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    // Print final result to stdout to prevent optimizer from removing computation
+    printf("%lu\n", g_data.result_accumulator);
+
+    // Print timing information to stderr
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

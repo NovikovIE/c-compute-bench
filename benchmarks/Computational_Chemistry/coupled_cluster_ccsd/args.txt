@@ -1,0 +1,1 @@
+num_occupied_orbitals,num_virtual_orbitals,seed

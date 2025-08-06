@@ -1,0 +1,1 @@
+simulation_duration_s,events_per_second,window_duration_ms,aggregation_complexity,seed

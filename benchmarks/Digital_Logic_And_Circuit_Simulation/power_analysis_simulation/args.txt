@@ -1,0 +1,1 @@
+num_gates,num_flip_flops,num_clock_cycles,toggle_rate_percentage,seed

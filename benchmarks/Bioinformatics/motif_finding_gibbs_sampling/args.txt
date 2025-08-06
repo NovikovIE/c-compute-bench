@@ -1,0 +1,1 @@
+num_sequences,average_sequence_length,motif_length,num_iterations,seed

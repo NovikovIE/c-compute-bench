@@ -1,0 +1,342 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <stdint.h>
+
+// --- MERSENNE TWISTER (from prompt) ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+             fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+             exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+
+// --- BENCHMARK DATA AND LOGIC ---
+
+// Represents a node in the Computation Tree Logic (CTL) formula
+typedef enum {
+    AP, NOT, AND, OR, EX, EG, EU
+} NodeType;
+
+typedef struct FormulaNode {
+    NodeType type;
+    int ap_index; // For Atomic Proposition (AP) nodes
+    struct FormulaNode *child1;
+    struct FormulaNode *child2;
+} FormulaNode;
+
+// Cache for simulated BDD operations to mimic memoization
+#define CACHE_SIZE (1 << 16) // 65536
+#define CACHE_MASK (CACHE_SIZE - 1)
+
+typedef struct {
+    NodeType op; // Using NodeType for BDD ops like AND, OR, etc.
+    int arg1;
+    int arg2; // arg2 is -1 for unary ops
+    int result;
+} CacheEntry;
+
+// Global struct to hold all benchmark data
+typedef struct {
+    // Parameters
+    int num_state_variables;
+    int ctl_formula_complexity;
+    int num_atomic_props;
+
+    // Kripke Model Data (simulated)
+    int transition_relation_bdd; // An int representing the BDD for the transition relation
+    int* ap_bdds; // BDDs for each atomic proposition
+
+    // CTL Formula
+    FormulaNode *ctl_formula_root;
+
+    // BDD simulation data
+    uint32_t* bdd_nodes; // The "unique table" of BDD nodes, storing a hash value
+    int bdd_node_count;
+    int bdd_capacity;
+    CacheEntry* op_cache;
+
+    // Benchmark result
+    int final_result_bdd;
+} BenchmarkData;
+
+static BenchmarkData* g_data;
+
+// --- FORWARD DECLARATIONS of static helpers ---
+static int create_new_bdd_node(uint32_t); 
+static int bdd_apply(NodeType, int, int);
+static int pre_image(int);
+static FormulaNode* create_formula(int);
+static int eval(FormulaNode*);
+
+// --- BDD SIMULATION HELPERS ---
+
+// Creates a new simulated BDD node. Returns its ID.
+static int create_new_bdd_node(uint32_t value) {
+    if (g_data->bdd_node_count >= g_data->bdd_capacity) {
+        fprintf(stderr, "FATAL: BDD table capacity exceeded.\n");
+        exit(1);
+    }
+    int id = g_data->bdd_node_count++;
+    g_data->bdd_nodes[id] = value;
+    return id;
+}
+
+// Simulates a binary BDD operation (e.g., AND, OR).
+// Includes caching to mimic the core of real BDD packages.
+static int bdd_apply(NodeType op, int u1, int u2) {
+    uint32_t hash = ((uint32_t)op * 16777619) ^ ((uint32_t)u1 * 31) ^ (uint32_t)u2;
+    int index = hash & CACHE_MASK;
+    CacheEntry* entry = &g_data->op_cache[index];
+
+    if (entry->op == op && entry->arg1 == u1 && entry->arg2 == u2) {
+        return entry->result;
+    }
+
+    // Cache miss: simulate work by doing some calculations based on input node data.
+    uint32_t work_val = 0;
+    for (int i = 0; i < 5; ++i) {
+        work_val += g_data->bdd_nodes[u1 % g_data->bdd_node_count] ^ g_data->bdd_nodes[u2 % g_data->bdd_node_count];
+        work_val = (work_val * 31) + g_data->bdd_nodes[(u1 + u2 + i * work_val) % g_data->bdd_node_count];
+    }
+
+    int result_node_id = create_new_bdd_node(work_val ^ hash);
+
+    entry->op = op;
+    entry->arg1 = u1;
+    entry->arg2 = u2;
+    entry->result = result_node_id;
+
+    return result_node_id;
+}
+
+// Simulates the pre-image calculation: a key step in symbolic model checking.
+static int pre_image(int set_bdd) {
+    return bdd_apply(EX, set_bdd, g_data->transition_relation_bdd);
+}
+
+// --- SETUP FUNCTIONS ---
+
+// Recursively creates a random CTL formula tree.
+static FormulaNode* create_formula(int depth) {
+    if (depth <= 0) { // Base case: create an atomic proposition
+        FormulaNode* node = (FormulaNode*)malloc(sizeof(FormulaNode));
+        node->type = AP;
+        node->ap_index = mt_rand() % g_data->num_atomic_props;
+        node->child1 = node->child2 = NULL;
+        return node;
+    }
+
+    FormulaNode* node = (FormulaNode*)malloc(sizeof(FormulaNode));
+    int op_choice = mt_rand() % 100;
+
+    if (op_choice < 20) { // Unary operators: NOT, EX, EG
+        int unary_op = mt_rand() % 3;
+        if (unary_op == 0) node->type = NOT;
+        else if (unary_op == 1) node->type = EX;
+        else node->type = EG;
+        node->child1 = create_formula(depth - 1);
+        node->child2 = NULL;
+    } else { // Binary operators: AND, OR, EU
+        int binary_op = mt_rand() % 3;
+        if (binary_op == 0) node->type = AND;
+        else if (binary_op == 1) node->type = OR;
+        else node->type = EU;
+        node->child1 = create_formula(depth - 1);
+        node->child2 = create_formula(depth - 1);
+    }
+    return node;
+}
+
+// Recursively free the formula tree
+void free_formula(FormulaNode* node) {
+    if (node == NULL) return;
+    free_formula(node->child1);
+    free_formula(node->child2);
+    free(node);
+}
+
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s <num_state_variables> <ctl_formula_complexity> <seed>\n", argv[0]);
+        exit(1);
+    }
+
+    g_data = (BenchmarkData*)malloc(sizeof(BenchmarkData));
+    if (!g_data) { perror("malloc BenchmarkData"); exit(1); }
+
+    g_data->num_state_variables = atoi(argv[1]);
+    g_data->ctl_formula_complexity = atoi(argv[2]);
+    uint32_t seed = (uint32_t)atoi(argv[3]);
+    mt_seed(seed);
+
+    g_data->num_atomic_props = g_data->num_state_variables;
+    // Set BDD capacity based on formula complexity. This can require tuning.
+    g_data->bdd_capacity = (1 + g_data->ctl_formula_complexity) * 2000;
+
+    // Allocate memory
+    g_data->bdd_nodes = (uint32_t*)malloc(g_data->bdd_capacity * sizeof(uint32_t));
+    g_data->op_cache = (CacheEntry*)malloc(CACHE_SIZE * sizeof(CacheEntry));
+    g_data->ap_bdds = (int*)malloc(g_data->num_atomic_props * sizeof(int));
+    if (!g_data->bdd_nodes || !g_data->op_cache || !g_data->ap_bdds) {
+        perror("malloc in setup");
+        exit(1);
+    }
+    
+    // Initialize cache
+    for (int i = 0; i < CACHE_SIZE; ++i) {
+        g_data->op_cache[i].op = -1; // Invalid op
+    }
+
+    // Initialize BDD table. Node 0 is FALSE, Node 1 is TRUE.
+    g_data->bdd_node_count = 0;
+    create_new_bdd_node(0); // BDD_FALSE
+    create_new_bdd_node(0xFFFFFFFF); // BDD_TRUE
+
+    //_Generate base BDDs for state variables v_i and next-state variables v'_i
+    int num_vars_total = 2 * g_data->num_state_variables;
+    for (int i = 0; i < num_vars_total; ++i) {
+        create_new_bdd_node(mt_rand());
+    }
+
+    // Generate BDDs for atomic propositions (random combination of state vars)
+    for (int i = 0; i < g_data->num_atomic_props; ++i) {
+        int bdd = 2 + (mt_rand() % g_data->num_state_variables);
+        int ops = mt_rand() % 3; // 0 to 2 operations
+        for (int j = 0; j < ops; ++j) {
+            int other_bdd = 2 + (mt_rand() % g_data->num_state_variables);
+            bdd = bdd_apply(AND, bdd, other_bdd);
+        }
+        g_data->ap_bdds[i] = bdd;
+    }
+
+    // Generate complex transition relation BDD
+    int trans_rel = 1; // Start with TRUE
+    for (int i = 0; i < g_data->num_state_variables; ++i) {
+        int current_var_bdd = 2 + i;
+        int next_var_bdd = 2 + g_data->num_state_variables + i;
+        int func = bdd_apply(OR, current_var_bdd, g_data->ap_bdds[i]);
+        int equiv = bdd_apply(AND, bdd_apply(OR, bdd_apply(NOT, next_var_bdd, -1), func), bdd_apply(OR, bdd_apply(NOT, func, -1), next_var_bdd));
+        trans_rel = bdd_apply(AND, trans_rel, equiv);
+    }
+    g_data->transition_relation_bdd = trans_rel;
+
+    // Generate the CTL formula tree
+    g_data->ctl_formula_root = create_formula(g_data->ctl_formula_complexity);
+}
+
+// --- CORE COMPUTATION ---
+
+// Recursively evaluates the CTL formula, returning a BDD node ID.
+static int eval(FormulaNode* node) {
+    if (node == NULL) return 0; // Should not happen
+
+    // Memoization could be added here for common subformulas, but BDD cache handles it.
+
+    switch (node->type) {
+        case AP:    return g_data->ap_bdds[node->ap_index];
+        case NOT:   return bdd_apply(NOT, eval(node->child1), -1);
+        case AND:   return bdd_apply(AND, eval(node->child1), eval(node->child2));
+        case OR:    return bdd_apply(OR, eval(node->child1), eval(node->child2));
+        case EX:    return pre_image(eval(node->child1));
+        case EG: { // Fixed-point calculation: gfp Z . (phi AND EX Z)
+            int phi = eval(node->child1);
+            int Z = 1; // Start with TRUE
+            int Y = 0; // Different from Z
+            int iter_limit = 100; // Prevent infinite loops in simulation
+            while (Z != Y && iter_limit-- > 0) {
+                Y = Z;
+                int ex_y = pre_image(Y);
+                Z = bdd_apply(AND, phi, ex_y);
+            }
+            return Z;
+        }
+        case EU: { // Fixed-point calculation: lfp Z . (psi OR (phi AND EX Z))
+            int phi = eval(node->child1);
+            int psi = eval(node->child2);
+            int Z = 0; // Start with FALSE
+            int Y = -1; // Different from Z
+            int iter_limit = 100;
+            while (Z != Y && iter_limit-- > 0) {
+                Y = Z;
+                int ex_y = pre_image(Y);
+                int phi_and_ex_y = bdd_apply(AND, phi, ex_y);
+                Z = bdd_apply(OR, psi, phi_and_ex_y);
+            }
+            return Z;
+        }
+    }
+    return 0; // Unreachable
+}
+
+void run_computation() {
+    g_data->final_result_bdd = eval(g_data->ctl_formula_root);
+}
+
+// --- CLEANUP --- 
+
+void cleanup() {
+    free(g_data->bdd_nodes);
+    free(g_data->op_cache);
+    free(g_data->ap_bdds);
+    free_formula(g_data->ctl_formula_root);
+    free(g_data);
+}
+
+// --- MAIN --- 
+
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    // Print the final BDD integer ID to stdout to prevent dead code elimination.
+    printf("%d\n", g_data->final_result_bdd);
+
+    // Print timing to stderr
+    fprintf(stderr, "%.6f", time_taken);
+
+    cleanup();
+
+    return 0;
+}

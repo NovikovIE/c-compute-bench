@@ -1,0 +1,365 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+#include <string.h>
+#include <stdbool.h>
+
+// --- BEGIN MERSENNE TWISTER (MT19937) --- Do Not Modify ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+                fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+                exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+// --- END MERSENNE TWISTER ---
+
+// --- BENCHMARK SPECIFIC DEFINITIONS ---
+#define MAX_BODY_LEN 4
+#define MAX_STATES 10000
+#define MAX_ITEMS_PER_STATE 4096
+#define ITEM_POOL_SIZE (MAX_STATES * 256) // Heuristic pool size for items
+
+// Represents a production rule: head -> body
+struct Rule {
+    int head;
+    int body_len;
+    int body[MAX_BODY_LEN];
+};
+
+// Represents an LR(0) item: a rule with a dot position
+struct Item {
+    int rule_idx;
+    int dot_pos;
+};
+
+// Represents a state (a set of LR(0) items)
+struct ItemSet {
+    int count;
+    struct Item* items;
+};
+
+// Structure to hold all benchmark data
+struct BenchmarkContext {
+    int num_grammar_rules;
+    int num_terminals;
+    int num_non_terminals;
+    int num_total_symbols;
+    int aug_start_symbol;
+    int start_symbol;
+
+    struct Rule* grammar; // Grammar rules, including one augmented rule
+
+    struct ItemSet* states;
+    struct Item* item_pool;
+    size_t item_pool_next_idx;
+    int num_states;
+
+    int** action_table; // action[state][terminal]
+    int** goto_table;   // goto_table[state][non_terminal]
+
+    long long final_result;
+};
+
+static struct BenchmarkContext g_ctx;
+
+// --- FORWARD DECLARATIONS of helpers for run_computation ---
+int item_compare(const void* a, const void* b);
+void compute_closure(struct ItemSet* item_set);
+int find_state(struct ItemSet* set);
+void compute_goto(struct ItemSet* out_set, const struct ItemSet* in_set, int symbol);
+
+// --- BENCHMARK FUNCTIONS ---
+
+void setup_benchmark(int argc, char* argv[]) {
+    if (argc != 5) {
+        fprintf(stderr, "Usage: %s <num_grammar_rules> <num_terminals> <num_non_terminals> <seed>\n", argv[0]);
+        exit(1);
+    }
+
+    g_ctx.num_grammar_rules = atoi(argv[1]);
+    g_ctx.num_terminals = atoi(argv[2]);
+    g_ctx.num_non_terminals = atoi(argv[3]);
+    mt_seed(atoi(argv[4]));
+
+    g_ctx.num_total_symbols = g_ctx.num_terminals + g_ctx.num_non_terminals;
+    g_ctx.start_symbol = g_ctx.num_terminals; // First non-terminal is start symbol
+    g_ctx.aug_start_symbol = g_ctx.num_terminals + g_ctx.num_non_terminals;
+
+    // Allocate grammar (plus one for the augmented rule S' -> S)
+    g_ctx.grammar = malloc((g_ctx.num_grammar_rules + 1) * sizeof(struct Rule));
+
+    // Generate random grammar rules
+    for (int i = 0; i < g_ctx.num_grammar_rules; ++i) {
+        // Rule head is a random non-terminal
+        g_ctx.grammar[i].head = g_ctx.num_terminals + (mt_rand() % g_ctx.num_non_terminals);
+        g_ctx.grammar[i].body_len = 1 + (mt_rand() % MAX_BODY_LEN);
+        for (int j = 0; j < g_ctx.grammar[i].body_len; ++j) {
+            // Body contains terminals or non-terminals
+            g_ctx.grammar[i].body[j] = mt_rand() % g_ctx.num_total_symbols;
+        }
+    }
+
+    // Add the augmented rule: S' -> S
+    g_ctx.grammar[g_ctx.num_grammar_rules].head = g_ctx.aug_start_symbol;
+    g_ctx.grammar[g_ctx.num_grammar_rules].body_len = 1;
+    g_ctx.grammar[g_ctx.num_grammar_rules].body[0] = g_ctx.start_symbol;
+
+    // Allocate space for states and their items
+    g_ctx.states = calloc(MAX_STATES, sizeof(struct ItemSet));
+    g_ctx.item_pool = malloc(ITEM_POOL_SIZE * sizeof(struct Item));
+    g_ctx.item_pool_next_idx = 0;
+    for(int i = 0; i < MAX_STATES; ++i) {
+        g_ctx.states[i].items = malloc(MAX_ITEMS_PER_STATE * sizeof(struct Item));
+    }
+
+    // Allocate ACTION/GOTO tables
+    g_ctx.action_table = malloc(MAX_STATES * sizeof(int*));
+    for (int i = 0; i < MAX_STATES; ++i) {
+        g_ctx.action_table[i] = malloc(g_ctx.num_terminals * sizeof(int));
+        memset(g_ctx.action_table[i], -1, g_ctx.num_terminals * sizeof(int));
+    }
+    g_ctx.goto_table = malloc(MAX_STATES * sizeof(int*));
+    for (int i = 0; i < MAX_STATES; ++i) {
+        g_ctx.goto_table[i] = malloc(g_ctx.num_non_terminals * sizeof(int));
+        memset(g_ctx.goto_table[i], -1, g_ctx.num_non_terminals * sizeof(int));
+    }
+
+    g_ctx.final_result = 0;
+    g_ctx.num_states = 0;
+}
+
+void run_computation() {
+    // Create a temporary set for GOTO calculations
+    struct ItemSet temp_goto_set;
+    temp_goto_set.items = malloc(MAX_ITEMS_PER_STATE * sizeof(struct Item));
+
+    // 1. Create initial state I_0 = CLOSURE({[S' -> . S]})
+    struct ItemSet* I0 = &g_ctx.states[g_ctx.num_states++];
+    I0->count = 0;
+    struct Item initial_item = {g_ctx.num_grammar_rules, 0}; // Item for S' -> . S
+    I0->items[I0->count++] = initial_item;
+    compute_closure(I0);
+    qsort(I0->items, I0->count, sizeof(struct Item), item_compare);
+
+    // 2. Build the collection of canonical LR(0) items (the states)
+    int worklist_head = 0;
+    while(worklist_head < g_ctx.num_states) {
+        struct ItemSet* current_set = &g_ctx.states[worklist_head];
+        
+        for (int symbol = 0; symbol < g_ctx.num_total_symbols; ++symbol) {
+            compute_goto(&temp_goto_set, current_set, symbol);
+            if (temp_goto_set.count == 0) continue;
+
+            qsort(temp_goto_set.items, temp_goto_set.count, sizeof(struct Item), item_compare);
+            int state_idx = find_state(&temp_goto_set);
+
+            if (state_idx == -1) { // New state found
+                if (g_ctx.num_states >= MAX_STATES) { fprintf(stderr, "MAX_STATES exceeded\n"); exit(1); }
+                state_idx = g_ctx.num_states++;
+                struct ItemSet* new_state = &g_ctx.states[state_idx];
+                new_state->count = temp_goto_set.count;
+                memcpy(new_state->items, temp_goto_set.items, temp_goto_set.count * sizeof(struct Item));
+            }
+
+            // Fill GOTO table entry
+            if (symbol >= g_ctx.num_terminals) {
+                g_ctx.goto_table[worklist_head][symbol - g_ctx.num_terminals] = state_idx;
+            }
+        }
+        worklist_head++;
+    }
+
+    free(temp_goto_set.items);
+
+    // 3. Construct the ACTION table based on the states
+    for (int i = 0; i < g_ctx.num_states; ++i) {
+        struct ItemSet* state = &g_ctx.states[i];
+        for (int j = 0; j < state->count; ++j) {
+            struct Item item = state->items[j];
+            struct Rule* rule = &g_ctx.grammar[item.rule_idx];
+
+            if (item.dot_pos < rule->body_len) {
+                int symbol = rule->body[item.dot_pos];
+                if (symbol < g_ctx.num_terminals) { // Terminal: SHIFT action
+                    compute_goto(&temp_goto_set, state, symbol);
+                    qsort(temp_goto_set.items, temp_goto_set.count, sizeof(struct Item), item_compare);
+                    int next_state_idx = find_state(&temp_goto_set);
+                    if (next_state_idx != -1) {
+                        g_ctx.action_table[i][symbol] = next_state_idx; // SHIFT
+                    }
+                }
+            } else { // Dot is at the end: REDUCE or ACCEPT action
+                if (rule->head == g_ctx.aug_start_symbol) { 
+                    // ACCEPT: Action for S' -> S. is accept on EOF ($). EOF is not explicitly modeled, but this logic is key.
+                } else { // REDUCE
+                    for (int term = 0; term < g_ctx.num_terminals; ++term) {
+                        // In LR(0), we reduce on any terminal. This will have conflicts.
+                         g_ctx.action_table[i][term] = -item.rule_idx -1; // Negative for REDUCE
+                    }
+                }
+            }
+        }
+    }
+    
+    // 4. Calculate final result to prevent dead code elimination
+    long long sum = 0;
+    for(int i = 0; i < g_ctx.num_states; ++i) {
+        for(int j = 0; j < g_ctx.num_terminals; ++j) {
+            if (g_ctx.action_table[i][j] != -1) {
+                sum += (long long)(i + 1) * (j + 1) * g_ctx.action_table[i][j];
+            }
+        }
+        for(int j = 0; j < g_ctx.num_non_terminals; ++j) {
+            if (g_ctx.goto_table[i][j] != -1) {
+                sum += (long long)(i + 1) * (j + 1) * g_ctx.goto_table[i][j];
+            }
+        }
+    }
+    g_ctx.final_result = sum;
+}
+
+void cleanup() {
+    free(g_ctx.grammar);
+    for (int i = 0; i < MAX_STATES; ++i) {
+        free(g_ctx.action_table[i]);
+        free(g_ctx.goto_table[i]);
+        free(g_ctx.states[i].items);
+    }
+    free(g_ctx.action_table);
+    free(g_ctx.goto_table);
+    free(g_ctx.states);
+    free(g_ctx.item_pool);
+}
+
+// --- HELPER FUNCTION IMPLEMENTATIONS ---
+
+int item_compare(const void* a, const void* b) {
+    const struct Item* item_a = (const struct Item*)a;
+    const struct Item* item_b = (const struct Item*)b;
+    if (item_a->rule_idx != item_b->rule_idx) {
+        return item_a->rule_idx - item_b->rule_idx;
+    }
+    return item_a->dot_pos - item_b->dot_pos;
+}
+
+void compute_closure(struct ItemSet* item_set) {
+    bool added[g_ctx.num_grammar_rules + 1][MAX_BODY_LEN + 2];
+    memset(added, 0, sizeof(added));
+
+    for(int i = 0; i < item_set->count; ++i) {
+        added[item_set->items[i].rule_idx][item_set->items[i].dot_pos] = true;
+    }
+
+    int head = 0;
+    while(head < item_set->count) {
+        struct Item current_item = item_set->items[head++];
+        struct Rule* rule = &g_ctx.grammar[current_item.rule_idx];
+
+        if (current_item.dot_pos < rule->body_len) {
+            int symbol_after_dot = rule->body[current_item.dot_pos];
+            if (symbol_after_dot >= g_ctx.num_terminals) { // It's a non-terminal
+                for (int i = 0; i <= g_ctx.num_grammar_rules; ++i) {
+                    if (g_ctx.grammar[i].head == symbol_after_dot) {
+                        if (!added[i][0]) {
+                            if (item_set->count >= MAX_ITEMS_PER_STATE) { fprintf(stderr, "MAX_ITEMS_PER_STATE exceeded\n"); exit(1); }
+                            struct Item new_item = {i, 0};
+                            item_set->items[item_set->count++] = new_item;
+                            added[i][0] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+bool item_sets_equal(const struct ItemSet* s1, const struct ItemSet* s2) {
+    if (s1->count != s2->count) return false;
+    for (int i = 0; i < s1->count; ++i) {
+        if (s1->items[i].rule_idx != s2->items[i].rule_idx || s1->items[i].dot_pos != s2->items[i].dot_pos) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Linearly scans existing states. Inefficient but fine for a benchmark.
+int find_state(struct ItemSet* set) {
+    for (int i = 0; i < g_ctx.num_states; ++i) {
+        if (item_sets_equal(set, &g_ctx.states[i])) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void compute_goto(struct ItemSet* out_set, const struct ItemSet* in_set, int symbol) {
+    out_set->count = 0;
+    for (int i = 0; i < in_set->count; ++i) {
+        struct Item item = in_set->items[i];
+        struct Rule* rule = &g_ctx.grammar[item.rule_idx];
+        if (item.dot_pos < rule->body_len && rule->body[item.dot_pos] == symbol) {
+            if (out_set->count >= MAX_ITEMS_PER_STATE) { fprintf(stderr, "MAX_ITEMS_PER_STATE exceeded in GOTO\n"); exit(1); }
+            struct Item new_item = {item.rule_idx, item.dot_pos + 1};
+            out_set->items[out_set->count++] = new_item;
+        }
+    }
+    if (out_set->count > 0) {
+        compute_closure(out_set);
+    }
+}
+
+// --- MAIN FUNCTION ---
+int main(int argc, char* argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    printf("%lld\n", g_ctx.final_result);
+    fprintf(stderr, "%.6f", time_taken);
+
+    cleanup();
+
+    return 0;
+}

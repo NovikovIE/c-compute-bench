@@ -1,0 +1,1 @@
+text_length,pattern_length,alphabet_size,seed

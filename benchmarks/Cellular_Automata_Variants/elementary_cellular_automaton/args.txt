@@ -1,0 +1,1 @@
+rule_number,grid_width,num_steps,seed

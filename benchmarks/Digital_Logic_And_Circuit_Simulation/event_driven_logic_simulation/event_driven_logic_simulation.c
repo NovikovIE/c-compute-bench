@@ -1,0 +1,314 @@
+/*
+ * BENCHMARK: Event-Driven Logic Simulation
+ * DESCRIPTION: This program simulates a digital logic circuit using an event-driven model.
+ *              The circuit consists of a user-defined number of logic gates (AND, OR, NOT, XOR)
+ *              and D-type flip-flops. The simulation proceeds by processing events from a 
+ *              priority queue (min-heap). Each event represents a node value change at a specific
+ *              time. When a node changes value, the program determines which logic components are
+ *              affected (fan-out) and schedules new events if their outputs change, introducing
+ *              a small propagation delay. The primary computational load comes from evaluating
+ *              component outputs and managing the event queue for a large, randomly connected circuit.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+
+// --- Mersenne Twister (MT19937) PRNG --- (DO NOT MODIFY)
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+             fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+             exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+// --- End of MT19937 --- 
+
+// --- Benchmark Data Structures ---
+
+typedef enum { GATE_AND, GATE_OR, GATE_NOT, GATE_XOR } GateType;
+typedef uint8_t NodeValue; // Represents logic 0 or 1
+
+typedef struct {
+    uint64_t timestamp;
+    int node_idx;
+    NodeValue value;
+} Event;
+
+typedef struct {
+    GateType type;
+    int input1_idx;
+    int input2_idx; // Unused for NOT gates
+} Gate;
+
+typedef struct {
+    int d_input_idx;
+    int clk_input_idx;
+    NodeValue state; // Internal state of the flip-flop
+} FlipFlop;
+
+// --- Globals for Benchmark Data and Parameters ---
+
+// Parameters
+static int num_gates;
+static int num_flip_flops;
+static int num_input_vectors;
+static uint64_t simulation_duration_ns;
+
+// Circuit data
+static int num_nodes;
+static NodeValue* node_values; // Current value of each node
+static Gate* gates;
+static FlipFlop* flip_flops;
+
+// Event Queue (Min-Heap implementation)
+static Event* event_queue;
+static int event_queue_size;
+static int event_queue_capacity;
+
+// Final result accumulator
+static uint64_t final_result = 0;
+
+// --- Min-Heap for Event Queue ---
+
+void swap_events(Event* a, Event* b) {
+    Event temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
+void heapify_down(int idx) {
+    int smallest = idx;
+    int left = 2 * idx + 1;
+    int right = 2 * idx + 2;
+
+    if (left < event_queue_size && event_queue[left].timestamp < event_queue[smallest].timestamp) {
+        smallest = left;
+    }
+    if (right < event_queue_size && event_queue[right].timestamp < event_queue[smallest].timestamp) {
+        smallest = right;
+    }
+    if (smallest != idx) {
+        swap_events(&event_queue[idx], &event_queue[smallest]);
+        heapify_down(smallest);
+    }
+}
+
+void heap_push(Event event) {
+    if (event_queue_size >= event_queue_capacity) {
+        // In a real scenario, realloc would be needed. For this benchmark, we pre-allocate a large buffer.
+        return;
+    }
+    int i = event_queue_size++;
+    event_queue[i] = event;
+    while (i != 0 && event_queue[(i - 1) / 2].timestamp > event_queue[i].timestamp) {
+        swap_events(&event_queue[i], &event_queue[(i - 1) / 2]);
+        i = (i - 1) / 2;
+    }
+}
+
+Event heap_pop() {
+    if (event_queue_size <= 0) {
+        // Should not happen in this benchmark's logic
+        return (Event){.timestamp = -1};
+    }
+    if (event_queue_size == 1) {
+        event_queue_size--;
+        return event_queue[0];
+    }
+    Event root = event_queue[0];
+    event_queue[0] = event_queue[--event_queue_size];
+    heapify_down(0);
+    return root;
+}
+
+// --- Benchmark Functions ---
+
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 6) {
+        fprintf(stderr, "Usage: %s num_gates num_flip_flops num_input_vectors simulation_duration_ns seed\n", argv[0]);
+        exit(1);
+    }
+
+    num_gates = atoi(argv[1]);
+    num_flip_flops = atoi(argv[2]);
+    num_input_vectors = atoi(argv[3]);
+    simulation_duration_ns = atoll(argv[4]);
+    uint32_t seed = atoi(argv[5]);
+
+    mt_seed(seed);
+
+    num_nodes = num_input_vectors + num_gates + num_flip_flops;
+
+    // Allocate memory
+    node_values = (NodeValue*)malloc(num_nodes * sizeof(NodeValue));
+    gates = (Gate*)malloc(num_gates * sizeof(Gate));
+    flip_flops = (FlipFlop*)malloc(num_flip_flops * sizeof(FlipFlop));
+
+    event_queue_capacity = 8 * 1024 * 1024; // Generous 8M events capacity
+    event_queue = (Event*)malloc(event_queue_capacity * sizeof(Event));
+    event_queue_size = 0;
+
+    // Initialize circuit topology and values randomly
+    for (int i = 0; i < num_nodes; ++i) {
+        node_values[i] = mt_rand() % 2;
+    }
+
+    // Create gates with inputs from preceding nodes to avoid combinational loops
+    for (int i = 0; i < num_gates; ++i) {
+        int gate_output_node_idx = num_input_vectors + i;
+        gates[i].type = mt_rand() % 4; // AND, OR, NOT, XOR
+        gates[i].input1_idx = mt_rand() % gate_output_node_idx;
+        if (gates[i].type != GATE_NOT) {
+            gates[i].input2_idx = mt_rand() % gate_output_node_idx;
+        }
+    }
+
+    // Create flip-flops, allowing feedback
+    for (int i = 0; i < num_flip_flops; ++i) {
+        int ff_output_node_idx = num_input_vectors + num_gates + i;
+        flip_flops[i].d_input_idx = mt_rand() % num_nodes;
+        flip_flops[i].clk_input_idx = mt_rand() % num_nodes;
+        flip_flops[i].state = node_values[ff_output_node_idx];
+    }
+    
+    // Schedule initial events for all input vectors to start the simulation
+    for (int i = 0; i < num_input_vectors; ++i) {
+        for (int j = 0; j < 4; ++j) { // Schedule a few initial toggles
+            Event e;
+            e.timestamp = mt_rand() % (simulation_duration_ns / 10);
+            e.node_idx = i;
+            e.value = mt_rand() % 2;
+            heap_push(e);
+        }
+    }
+}
+
+void run_computation() {
+    uint64_t current_time = 0;
+    uint64_t processed_events = 0;
+    const int propagation_delay = 1; // 1ns delay for all components
+
+    while (event_queue_size > 0) {
+        Event event = heap_pop();
+
+        if (event.timestamp > simulation_duration_ns) {
+            break;
+        }
+        
+        current_time = event.timestamp;
+
+        if (node_values[event.node_idx] == event.value) {
+            continue; // Value already same, no change propagates
+        }
+
+        NodeValue old_value = node_values[event.node_idx];
+        node_values[event.node_idx] = event.value;
+        processed_events++;
+
+        // Propagate the change. This is the computationally intensive part.
+        // Iterate through all components to see if they are affected (fan-out).
+
+        // Check gates
+        for (int i = 0; i < num_gates; ++i) {
+            // Fix: The fan-out check must not read gates[i].input2_idx for NOT gates, as it's uninitialized.
+            // Short-circuiting in the '||' condition prevents this.
+            if (gates[i].input1_idx == event.node_idx || (gates[i].type != GATE_NOT && gates[i].input2_idx == event.node_idx)) {
+                NodeValue v1 = node_values[gates[i].input1_idx];
+                NodeValue new_output;
+                
+                // Fix: Only read from input2 for gates that have a second input.
+                switch (gates[i].type) {
+                    case GATE_AND: new_output = v1 & node_values[gates[i].input2_idx]; break;
+                    case GATE_OR:  new_output = v1 | node_values[gates[i].input2_idx]; break;
+                    case GATE_NOT: new_output = !v1;     break;
+                    case GATE_XOR: new_output = v1 ^ node_values[gates[i].input2_idx]; break;
+                }
+                int output_node_idx = num_input_vectors + i;
+                if (new_output != node_values[output_node_idx]) {
+                    heap_push((Event){current_time + propagation_delay, output_node_idx, new_output});
+                }
+            }
+        }
+
+        // Check flip-flops
+        for (int i = 0; i < num_flip_flops; ++i) {
+            int output_node_idx = num_input_vectors + num_gates + i;
+            // Check for rising edge on clock
+            if (flip_flops[i].clk_input_idx == event.node_idx && old_value == 0 && event.value == 1) {
+                NodeValue d_value = node_values[flip_flops[i].d_input_idx];
+                if (d_value != flip_flops[i].state) {
+                    flip_flops[i].state = d_value;
+                    if (d_value != node_values[output_node_idx]) {
+                         heap_push((Event){current_time + propagation_delay, output_node_idx, d_value});
+                    }
+                }
+            } 
+        }
+    }
+
+    final_result = processed_events;
+}
+
+void cleanup() {
+    free(node_values);
+    free(gates);
+    free(flip_flops);
+    free(event_queue);
+}
+
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+    
+    // Print final result to stdout
+    printf("%llu\n", (unsigned long long)final_result);
+
+    // Print timing to stderr
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

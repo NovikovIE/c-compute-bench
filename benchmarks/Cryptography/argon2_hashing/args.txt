@@ -1,0 +1,1 @@
+memory_cost_m,time_cost_t,parallelism_p,password_len,salt_len,seed

@@ -1,0 +1,438 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+#include <math.h>
+#include <string.h>
+#include <float.h>
+#include <stdbool.h>
+
+// --- Mersenne Twister (MT19937) --- DO NOT MODIFY ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+                fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+                exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+// --- End of MT19937 ---
+
+// --- Benchmark Configuration ---
+typedef struct {
+    int n;
+    float* ls;
+    float* ss;
+} CF;
+
+typedef struct Node {
+    int num_entries;
+    bool is_leaf;
+    struct Node* parent;
+    CF** cf_entries;
+    struct Node** children;
+} Node;
+
+// Global parameters
+static int NUM_POINTS;
+static int NUM_FEATURES;
+static int BRANCHING_FACTOR;
+static float THRESHOLD;
+static float THRESHOLD_SQ;
+
+// Global data structures
+static float** g_points;
+static Node* g_root;
+static double g_final_result;
+
+// --- Forward Declarations for Core Logic ---
+static void insert(float* point);
+static void free_node_recursive(Node* node);
+
+// --- Utility Functions ---
+
+static float dist_sq(const float* v1, const float* v2) {
+    float sum_sq = 0.0f;
+    for (int i = 0; i < NUM_FEATURES; ++i) {
+        float diff = v1[i] - v2[i];
+        sum_sq += diff * diff;
+    }
+    return sum_sq;
+}
+
+static CF* new_cf(const float* point) {
+    CF* cf = (CF*)malloc(sizeof(CF));
+    cf->ls = (float*)malloc(NUM_FEATURES * sizeof(float));
+    cf->ss = (float*)malloc(NUM_FEATURES * sizeof(float));
+    if (point) {
+        cf->n = 1;
+        memcpy(cf->ls, point, NUM_FEATURES * sizeof(float));
+        for (int i = 0; i < NUM_FEATURES; ++i) {
+            cf->ss[i] = point[i] * point[i];
+        }
+    } else {
+        cf->n = 0;
+        memset(cf->ls, 0, NUM_FEATURES * sizeof(float));
+        memset(cf->ss, 0, NUM_FEATURES * sizeof(float));
+    }
+    return cf;
+}
+
+static void free_cf(CF* cf) {
+    if (cf) {
+        free(cf->ls);
+        free(cf->ss);
+        free(cf);
+    }
+}
+
+static Node* new_node(bool is_leaf, Node* parent) {
+    Node* node = (Node*)malloc(sizeof(Node));
+    node->num_entries = 0;
+    node->is_leaf = is_leaf;
+    node->parent = parent;
+    node->cf_entries = (CF**)malloc((BRANCHING_FACTOR + 1) * sizeof(CF*));
+    node->children = (Node**)malloc((BRANCHING_FACTOR + 1) * sizeof(Node*));
+    return node;
+}
+
+static void add_point_to_cf(CF* cf, const float* point) {
+    cf->n++;
+    for (int i = 0; i < NUM_FEATURES; ++i) {
+        cf->ls[i] += point[i];
+        cf->ss[i] += point[i] * point[i];
+    }
+}
+
+static void add_cf_to_cf(CF* target_cf, CF* source_cf) {
+    target_cf->n += source_cf->n;
+    for (int i = 0; i < NUM_FEATURES; ++i) {
+        target_cf->ls[i] += source_cf->ls[i];
+        target_cf->ss[i] += source_cf->ss[i];
+    }
+}
+
+static float get_cf_radius_sq(CF* cf) {
+    if (cf->n <= 1) return 0.0f;
+    float radius_sq = 0.0f;
+    for (int i = 0; i < NUM_FEATURES; ++i) {
+        float ls_i_n = cf->ls[i] / cf->n;
+        float ss_i_n = cf->ss[i] / cf->n;
+        radius_sq += ss_i_n - (ls_i_n * ls_i_n);
+    }
+    return radius_sq;
+}
+
+
+// --- Benchmark Functions ---
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 6) {
+        fprintf(stderr, "Usage: %s num_points num_features branching_factor threshold seed\n", argv[0]);
+        exit(1);
+    }
+
+    NUM_POINTS = atoi(argv[1]);
+    NUM_FEATURES = atoi(argv[2]);
+    BRANCHING_FACTOR = atoi(argv[3]);
+    THRESHOLD = atof(argv[4]);
+    uint32_t seed = (uint32_t)atoi(argv[5]);
+
+    THRESHOLD_SQ = THRESHOLD * THRESHOLD;
+
+    mt_seed(seed);
+
+    g_points = (float**)malloc(NUM_POINTS * sizeof(float*));
+    for (int i = 0; i < NUM_POINTS; ++i) {
+        g_points[i] = (float*)malloc(NUM_FEATURES * sizeof(float));
+        for (int j = 0; j < NUM_FEATURES; ++j) {
+            g_points[i][j] = (float)mt_rand() / (float)UINT32_MAX;
+        }
+    }
+
+    g_root = new_node(true, NULL);
+}
+
+void run_computation() {
+    for (int i = 0; i < NUM_POINTS; ++i) {
+        insert(g_points[i]);
+    }
+    
+    g_final_result = 0.0;
+    // Simple recursive traversal to calculate final result
+    // Using a manual stack to avoid deep recursion issues
+    Node** stack = (Node**)malloc(NUM_POINTS * sizeof(Node*)); // Over-provisioned stack
+    int stack_top = 0;
+    stack[stack_top++] = g_root;
+
+    while (stack_top > 0) {
+        Node* curr = stack[--stack_top];
+        if (curr->is_leaf) {
+            for (int i = 0; i < curr->num_entries; i++) {
+                CF* cf = curr->cf_entries[i];
+                if (cf->n > 0) {
+                    g_final_result += cf->ls[0] / cf->n;
+                }
+            }
+        } else {
+            for (int i = 0; i < curr->num_entries; i++) {
+                stack[stack_top++] = curr->children[i];
+            }
+        }
+    }
+    free(stack);
+}
+
+void cleanup() {
+    for (int i = 0; i < NUM_POINTS; ++i) {
+        free(g_points[i]);
+    }
+    free(g_points);
+    free_node_recursive(g_root);
+}
+
+// --- Core Algorithm Logic ---
+
+static void free_node_recursive(Node* node) {
+    if (node == NULL) return;
+    if (!node->is_leaf) {
+        for (int i = 0; i < node->num_entries; ++i) {
+            free_node_recursive(node->children[i]);
+        }
+    }
+    for (int i = 0; i < node->num_entries; ++i) {
+        free_cf(node->cf_entries[i]);
+    }
+    free(node->cf_entries);
+    free(node->children);
+    free(node);
+}
+
+static int find_closest_entry(Node* node, const float *point) {
+    float min_dist_sq = FLT_MAX;
+    int closest_idx = -1;
+    float centroid[NUM_FEATURES];
+
+    for (int i = 0; i < node->num_entries; ++i) {
+        CF* cf = node->cf_entries[i];
+        for(int j=0; j<NUM_FEATURES; ++j) centroid[j] = cf->ls[j] / cf->n;
+        float d = dist_sq(point, centroid);
+        if (d < min_dist_sq) {
+            min_dist_sq = d;
+            closest_idx = i;
+        }
+    }
+    return closest_idx;
+}
+
+static void update_ancestors(Node* node, CF* cf_to_add) {
+    while (node != NULL) {
+        int entry_idx = -1;
+        if (node->parent) {
+            for(int i = 0; i < node->parent->num_entries; ++i) {
+                if (node->parent->children[i] == node) {
+                    entry_idx = i;
+                    break;
+                }
+            }
+            if (entry_idx != -1) {
+                 add_cf_to_cf(node->parent->cf_entries[entry_idx], cf_to_add);
+            }
+        }
+        node = node->parent;
+    }
+}
+
+static void split_node(Node* node, CF** out_new_cf, Node** out_new_child) {
+    CF* all_cfs[BRANCHING_FACTOR + 1];
+    Node* all_children[BRANCHING_FACTOR + 1];
+
+    for(int i=0; i<BRANCHING_FACTOR; ++i) {
+        all_cfs[i] = node->cf_entries[i];
+        if(!node->is_leaf) all_children[i] = node->children[i];
+    }
+    all_cfs[BRANCHING_FACTOR] = *out_new_cf; 
+    if(!node->is_leaf) all_children[BRANCHING_FACTOR] = *out_new_child;
+
+    int seed1_idx = 0, seed2_idx = 1;
+    float max_dist = -1.0f;
+    float centroid1[NUM_FEATURES], centroid2[NUM_FEATURES];
+
+    for (int i = 0; i <= BRANCHING_FACTOR; ++i) {
+        for (int j = i + 1; j <= BRANCHING_FACTOR; ++j) {
+            for(int k=0; k<NUM_FEATURES; ++k) centroid1[k] = all_cfs[i]->ls[k] / all_cfs[i]->n;
+            for(int k=0; k<NUM_FEATURES; ++k) centroid2[k] = all_cfs[j]->ls[k] / all_cfs[j]->n;
+            float d = dist_sq(centroid1, centroid2);
+            if (d > max_dist) {
+                max_dist = d;
+                seed1_idx = i;
+                seed2_idx = j;
+            }
+        }
+    }
+
+    Node* sibling = new_node(node->is_leaf, node->parent);
+
+    node->num_entries = 0;
+
+    node->cf_entries[node->num_entries] = all_cfs[seed1_idx];
+    if(!node->is_leaf) node->children[node->num_entries] = all_children[seed1_idx];
+    node->num_entries++;
+
+    sibling->cf_entries[sibling->num_entries] = all_cfs[seed2_idx];
+    if(!node->is_leaf) sibling->children[sibling->num_entries] = all_children[seed2_idx];
+    sibling->num_entries++;
+
+    for (int i = 0; i <= BRANCHING_FACTOR; ++i) {
+        if (i == seed1_idx || i == seed2_idx) continue;
+        for(int k=0; k<NUM_FEATURES; ++k) centroid1[k] = all_cfs[seed1_idx]->ls[k] / all_cfs[seed1_idx]->n;
+        for(int k=0; k<NUM_FEATURES; ++k) centroid2[k] = all_cfs[seed2_idx]->ls[k] / all_cfs[seed2_idx]->n;
+        float point_centroid[NUM_FEATURES];
+        for(int k=0; k<NUM_FEATURES; ++k) point_centroid[k] = all_cfs[i]->ls[k] / all_cfs[i]->n;
+        
+        if (dist_sq(point_centroid, centroid1) < dist_sq(point_centroid, centroid2)) {
+            node->cf_entries[node->num_entries] = all_cfs[i];
+            if(!node->is_leaf) node->children[node->num_entries] = all_children[i];
+            node->num_entries++;
+        } else {
+            sibling->cf_entries[sibling->num_entries] = all_cfs[i];
+            if(!node->is_leaf) sibling->children[sibling->num_entries] = all_children[i];
+            sibling->num_entries++;
+        }
+    }
+
+    *out_new_cf = new_cf(NULL);
+    for(int i=0; i<sibling->num_entries; ++i) add_cf_to_cf(*out_new_cf, sibling->cf_entries[i]);
+    *out_new_child = sibling;
+}
+
+static void insert(float* point) {
+    CF* cf_point = new_cf(point);
+
+    Node* leaf = g_root;
+    while (!leaf->is_leaf) {
+        int closest_child_idx = find_closest_entry(leaf, point);
+        leaf = leaf->children[closest_child_idx];
+    }
+
+    if (leaf->num_entries > 0) {
+        int closest_cf_idx = find_closest_entry(leaf, point);
+        CF* closest_cf = leaf->cf_entries[closest_cf_idx];
+        CF temp_cf = *closest_cf;
+        temp_cf.ls = alloca(NUM_FEATURES * sizeof(float));
+        temp_cf.ss = alloca(NUM_FEATURES * sizeof(float));
+        memcpy(temp_cf.ls, closest_cf->ls, NUM_FEATURES * sizeof(float));
+        memcpy(temp_cf.ss, closest_cf->ss, NUM_FEATURES * sizeof(float));
+
+        add_point_to_cf(&temp_cf, point);
+
+        if (get_cf_radius_sq(&temp_cf) <= THRESHOLD_SQ) {
+            add_point_to_cf(closest_cf, point);
+            update_ancestors(leaf->parent, cf_point);
+            free_cf(cf_point);
+            return;
+        }
+    }
+
+    // Add new CF to leaf
+    leaf->cf_entries[leaf->num_entries] = cf_point;
+    leaf->num_entries++;
+    update_ancestors(leaf->parent, cf_point);
+
+    // Handle splits
+    Node* node_to_insert = NULL;
+    CF* cf_to_insert = NULL;
+    Node* current_node = leaf;
+
+    while (current_node->num_entries > BRANCHING_FACTOR) {
+        cf_to_insert = current_node->cf_entries[--current_node->num_entries];
+        if(!current_node->is_leaf) node_to_insert = current_node->children[current_node->num_entries];
+        else node_to_insert = NULL;
+
+        Node* parent = current_node->parent;
+        Node* new_sibling = NULL;
+        CF* cf_for_sibling = NULL;
+
+        split_node(current_node, &cf_to_insert, &node_to_insert);
+        
+        new_sibling = node_to_insert;
+        new_sibling->parent = parent;
+        cf_for_sibling = cf_to_insert;
+        
+        CF* cf_for_current = new_cf(NULL);
+        for(int i=0; i<current_node->num_entries; ++i) add_cf_to_cf(cf_for_current, current_node->cf_entries[i]);
+
+        if (parent == NULL) { // Root split
+            g_root = new_node(false, NULL);
+            g_root->cf_entries[0] = cf_for_current;
+            g_root->children[0] = current_node;
+            g_root->cf_entries[1] = cf_for_sibling;
+            g_root->children[1] = new_sibling;
+            g_root->num_entries = 2;
+            current_node->parent = g_root;
+            new_sibling->parent = g_root;
+            break; 
+        } else {
+            int i; // Find current_node in parent
+            for(i=0; i<parent->num_entries; i++) if(parent->children[i] == current_node) break;
+            free_cf(parent->cf_entries[i]);
+            parent->cf_entries[i] = cf_for_current;
+
+            parent->cf_entries[parent->num_entries] = cf_for_sibling;
+            parent->children[parent->num_entries] = new_sibling;
+            parent->num_entries++;
+            current_node = parent;
+        }
+    }
+}
+
+// --- Main Function ---
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    printf("%f\n", g_final_result);
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

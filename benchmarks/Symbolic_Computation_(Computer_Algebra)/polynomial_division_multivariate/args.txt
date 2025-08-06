@@ -1,0 +1,1 @@
+num_variables,dividend_degree,divisor_degree,dividend_num_terms,divisor_num_terms,seed

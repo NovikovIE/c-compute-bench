@@ -1,0 +1,335 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <time.h>
+#include <math.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+// --- Mersenne Twister (MT19937) implementation (verbatim) ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+                fprintf(stderr, "FATAL: Mersenne Twister not seeded.\n");
+                exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+
+// --- Utility Functions & Structs ---
+
+typedef struct { float x, y, z; } Vec3;
+
+static inline Vec3 vec_add(Vec3 a, Vec3 b) { return (Vec3){a.x + b.x, a.y + b.y, a.z + b.z}; }
+static inline Vec3 vec_sub(Vec3 a, Vec3 b) { return (Vec3){a.x - b.x, a.y - b.y, a.z - b.z}; }
+static inline Vec3 vec_scale(Vec3 v, float s) { return (Vec3){v.x * s, v.y * s, v.z * s}; }
+static inline Vec3 vec_mul(Vec3 a, Vec3 b) { return (Vec3){a.x * b.x, a.y * b.y, a.z * b.z}; }
+static inline float vec_dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+static inline Vec3 vec_cross(Vec3 a, Vec3 b) { return (Vec3){a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+static inline float vec_length_sq(Vec3 v) { return vec_dot(v, v); }
+static inline Vec3 vec_normalize(Vec3 v) { float len_inv = 1.0f / sqrtf(vec_length_sq(v)); return vec_scale(v, len_inv); }
+
+typedef struct { Vec3 origin, dir; } Ray;
+typedef struct {
+    Vec3 center;
+    float radius;
+    Vec3 diffuse_color;
+    Vec3 emission_color;
+} Sphere;
+
+typedef struct {
+    Vec3 position;
+    Vec3 normal;
+    Vec3 throughput;
+    int hit_obj_idx;
+    int is_valid;
+} PathVertex;
+
+// Global data structure
+static struct {
+    // Parameters
+    int image_width;
+    int image_height;
+    int num_objects;
+    int samples_per_pixel;
+    int max_path_length;
+
+    // Scene Data
+    Sphere* scene;
+    Vec3 *image_buffer;
+    Vec3 camera_pos;
+    int light_idx;
+
+    // Result
+    double final_result;
+} g_data;
+
+static float rand_float() {
+    return (float)mt_rand() / (float)UINT32_MAX;
+}
+
+// --- Benchmark Functions ---
+
+void setup_benchmark(int argc, char* argv[]) {
+    if (argc != 8) {
+        fprintf(stderr, "Usage: %s <width> <height> <objects> <spp> <path_len> <rng_seed> <seed>\n", argv[0]);
+        exit(1);
+    }
+
+    g_data.image_width = atoi(argv[1]);
+    g_data.image_height = atoi(argv[2]);
+    g_data.num_objects = atoi(argv[3]);
+    g_data.samples_per_pixel = atoi(argv[4]);
+    g_data.max_path_length = atoi(argv[5]);
+    uint32_t rng_seed = (uint32_t)strtoul(argv[6], NULL, 10);
+    // argv[7] (seed) is ignored as per instructions ambiguity
+
+    mt_seed(rng_seed);
+
+    g_data.image_buffer = (Vec3*)malloc(g_data.image_width * g_data.image_height * sizeof(Vec3));
+    g_data.scene = (Sphere*)malloc(g_data.num_objects * sizeof(Sphere));
+
+    if (!g_data.image_buffer || !g_data.scene) {
+        fprintf(stderr, "Memory allocation failed\n");
+        exit(1);
+    }
+
+    memset(g_data.image_buffer, 0, g_data.image_width * g_data.image_height * sizeof(Vec3));
+
+    // Simple Cornell Box-like setup
+    // Light source (object 0)
+    g_data.light_idx = 0;
+    g_data.scene[0] = (Sphere){{50, 68, 82}, 10.0f, {0,0,0}, {12,12,12}};
+
+    // Other objects
+    for (int i = 1; i < g_data.num_objects; ++i) {
+        g_data.scene[i] = (Sphere){
+            {10 + rand_float() * 80, 10 + rand_float() * 60, 20 + rand_float() * 60},
+            5.0f + rand_float() * 5.0f,
+            {rand_float() * 0.8f + 0.1f, rand_float() * 0.8f + 0.1f, rand_float() * 0.8f + 0.1f},
+            {0,0,0}
+        };
+    }
+
+    g_data.camera_pos = (Vec3){50, 52, 295.6f};
+    g_data.final_result = 0.0;
+}
+
+int intersect_scene(const Ray* r, float* t_out, int* id_out) {
+    float min_t = 1e20f;
+    int hit_id = -1;
+    for (int i = 0; i < g_data.num_objects; i++) {
+        Vec3 op = vec_sub(g_data.scene[i].center, r->origin);
+        float b = vec_dot(op, r->dir);
+        float det = b * b - vec_dot(op, op) + g_data.scene[i].radius * g_data.scene[i].radius;
+        if (det < 0) continue;
+        det = sqrtf(det);
+        float t = b - det;
+        if (t > 1e-4 && t < min_t) {
+            min_t = t;
+            hit_id = i;
+        }
+    }
+    if (hit_id != -1) {
+        *t_out = min_t;
+        *id_out = hit_id;
+    }
+    return hit_id != -1;
+}
+
+// Generates a path starting from a given ray
+int trace_path(Ray ray, PathVertex* path) {
+    Vec3 throughput = {1.0f, 1.0f, 1.0f};
+    int path_len = 0;
+
+    for (int depth = 0; depth < g_data.max_path_length; ++depth) {
+        float t;
+        int id;
+
+        if (!intersect_scene(&ray, &t, &id)) {
+            break; // Hit nothing, path ends
+        }
+
+        const Sphere* obj = &g_data.scene[id];
+        Vec3 hit_pos = vec_add(ray.origin, vec_scale(ray.dir, t));
+        Vec3 normal = vec_normalize(vec_sub(hit_pos, obj->center));
+
+        path[depth] = (PathVertex){hit_pos, normal, throughput, id, 1};
+        path_len++;
+
+        if (obj->emission_color.x > 0) {
+            break; // Hit light source, path ends
+        }
+        
+        // Russian Roulette could be added here for efficiency, but skipped for simplicity
+
+        // Update throughput with diffuse color
+        throughput = vec_mul(throughput, obj->diffuse_color);
+
+        // Diffuse bounce
+        float r1 = 2.0f * M_PI * rand_float();
+        float r2 = rand_float();
+        float r2s = sqrtf(r2);
+
+        Vec3 w = normal;
+        Vec3 u = vec_normalize(vec_cross(fabsf(w.x) > 0.1f ? (Vec3){0,1,0} : (Vec3){1,0,0}, w));
+        Vec3 v = vec_cross(w, u);
+        Vec3 d = vec_normalize(vec_add(vec_scale(u, cosf(r1)*r2s), vec_add(vec_scale(v, sinf(r1)*r2s), vec_scale(w, sqrtf(1-r2)))));
+
+        ray.origin = hit_pos;
+        ray.dir = d;
+    }
+    if (path_len < g_data.max_path_length) {
+        path[path_len].is_valid = 0;
+    }
+    return path_len;
+}
+
+void run_computation() {
+    Vec3 camera_dir = vec_normalize((Vec3){0, -0.042612f, -1});
+    Vec3 cx = {g_data.image_width * 0.5135f / g_data.image_height, 0, 0};
+    Vec3 cy = vec_normalize(vec_cross(cx, camera_dir));
+
+    PathVertex* eye_path = (PathVertex*)malloc(g_data.max_path_length * sizeof(PathVertex));
+    PathVertex* light_path = (PathVertex*)malloc(g_data.max_path_length * sizeof(PathVertex));
+
+    for (int y = 0; y < g_data.image_height; y++) {
+        for (int x = 0; x < g_data.image_width; x++) {
+            Vec3 pixel_color = {0,0,0};
+            for (int s = 0; s < g_data.samples_per_pixel; s++) {
+                // 1. Generate camera ray (eye path start)
+                float r1 = 2 * rand_float() - 1, r2 = 2 * rand_float() - 1;
+                float sx = ( ((x + 0.5f + r1) / g_data.image_width) - 0.5f );
+                float sy = ( ((y + 0.5f + r2) / g_data.image_height) - 0.5f );
+                Ray eye_ray = {g_data.camera_pos, vec_normalize(vec_add(camera_dir, vec_add(vec_scale(cx, sx), vec_scale(cy, sy)))) };
+
+                int eye_path_len = trace_path(eye_ray, eye_path);
+
+                // 2. Generate light ray (light path start)
+                const Sphere* light = &g_data.scene[g_data.light_idx];
+                float r1_light = 2.0f * M_PI * rand_float();
+                float r2_light = rand_float(); 
+                float r2s_light = sqrtf(r2_light);
+                Vec3 w_light = {cosf(r1_light)*r2s_light, sinf(r1_light)*r2s_light, sqrtf(1-r2_light)};
+                Ray light_ray = {vec_add(light->center, vec_scale(w_light, light->radius)), w_light};
+                
+                int light_path_len = trace_path(light_ray, light_path);
+
+                Vec3 color_from_connections = {0,0,0};
+
+                // 3. Connect paths
+                for (int i = 0; i < eye_path_len; i++) {
+                    // Add emission from eye path hitting a light source
+                    if (eye_path[i].hit_obj_idx == g_data.light_idx) {
+                        color_from_connections = vec_add(color_from_connections, vec_mul(eye_path[i].throughput, g_data.scene[g_data.light_idx].emission_color));
+                    }
+
+                    for (int j = 0; j < light_path_len; j++) {
+                        Vec3 p1 = eye_path[i].position;
+                        Vec3 p2 = light_path[j].position;
+                        Vec3 dir = vec_sub(p2, p1);
+                        float dist_sq = vec_length_sq(dir);
+                        float dist = sqrtf(dist_sq);
+                        dir = vec_scale(dir, 1.0f/dist);
+
+                        float t_shadow;
+                        int id_shadow;
+                        if (intersect_scene(&(Ray){p1, dir}, &t_shadow, &id_shadow) && t_shadow < dist * 0.999f) {
+                            continue; // Occluded
+                        }
+
+                        Vec3 brdf_eye = vec_scale(g_data.scene[eye_path[i].hit_obj_idx].diffuse_color, 1.0f/M_PI);
+                        Vec3 brdf_light = vec_scale(g_data.scene[light_path[j].hit_obj_idx].diffuse_color, 1.0f/M_PI);
+                        float geom_term = fabsf(vec_dot(eye_path[i].normal, dir)) * fabsf(vec_dot(light_path[j].normal, vec_scale(dir, -1.0f))) / dist_sq;
+                        
+                        Vec3 light_emission = vec_mul(light->emission_color, light_path[j].throughput);
+                        Vec3 contribution = vec_mul(eye_path[i].throughput, brdf_eye);
+                        contribution = vec_mul(contribution, vec_scale(brdf_light, geom_term));
+                        contribution = vec_mul(contribution, light_emission);
+                        
+                        color_from_connections = vec_add(color_from_connections, contribution);
+                    }
+                }
+                pixel_color = vec_add(pixel_color, color_from_connections);
+            }
+            g_data.image_buffer[y * g_data.image_width + x] = vec_scale(pixel_color, 1.0f / g_data.samples_per_pixel);
+        }
+    }
+
+    free(eye_path);
+    free(light_path);
+
+    double total_sum = 0.0;
+    for (int i = 0; i < g_data.image_width * g_data.image_height; i++) {
+        total_sum += g_data.image_buffer[i].x + g_data.image_buffer[i].y + g_data.image_buffer[i].z;
+    }
+    g_data.final_result = total_sum;
+}
+
+void cleanup() {
+    if (g_data.scene) {
+        free(g_data.scene);
+        g_data.scene = NULL;
+    }
+    if (g_data.image_buffer) {
+        free(g_data.image_buffer);
+        g_data.image_buffer = NULL;
+    }
+}
+
+int main(int argc, char* argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    // Print result to stdout
+    printf("%f\n", g_data.final_result);
+
+    // Print time to stderr
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

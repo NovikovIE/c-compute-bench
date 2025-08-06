@@ -1,0 +1,1 @@
+num_points,max_simplicial_dimension,seed

@@ -1,0 +1,1 @@
+num_samples,num_burn_in,num_variables,seed

@@ -1,0 +1,1 @@
+num_initial_clauses,num_variables,max_literals_per_clause,seed

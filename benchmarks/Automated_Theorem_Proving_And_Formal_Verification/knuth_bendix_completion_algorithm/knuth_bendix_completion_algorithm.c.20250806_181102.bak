@@ -1,0 +1,282 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <time.h>
+#include <stdbool.h>
+
+// --- MERSENNE TWISTER (from problem description) ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+                fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+                exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+// --- END MERSENNE TWISTER ---
+
+// --- BENCHMARK DATA STRUCTURES ---
+
+// A term is a sequence of integers representing function symbols.
+// For simplicity, variables are omitted in this benchmark.
+typedef struct {
+    int* term;
+    int len;
+} Term;
+
+// A rewrite rule is a pair of terms, lhs -> rhs.
+typedef struct {
+    Term lhs;
+    Term rhs;
+} Rule;
+
+// Global parameters
+static int NUM_INITIAL_RULES;
+static int MAX_TERM_LENGTH;
+static uint32_t SEED;
+
+// Global data structures for the rule system
+static Rule* rules;
+static int rule_count;
+static int rule_capacity;
+
+// Final result to prevent dead code elimination.
+static long long final_result;
+
+// --- HELPER FUNCTIONS ---
+
+// A simple term ordering: length-lexicographical.
+// Returns >0 if t1 > t2, <0 if t1 < t2, 0 if equal.
+static int compare_terms(Term t1, Term t2) {
+    int len_diff = t1.len - t2.len;
+    if (len_diff != 0) {
+        return len_diff;
+    }
+    return memcmp(t1.term, t2.term, t1.len * sizeof(int));
+}
+
+// Adds a new rule to the system, orienting it based on term order.
+// The function makes its own copies of the term data.
+static void add_rule(Term t1, Term t2) {
+    if (rule_count >= rule_capacity) return;
+
+    Term lhs, rhs;
+    int ord = compare_terms(t1, t2);
+    if (ord > 0) {
+        lhs = t1;
+        rhs = t2;
+    } else if (ord < 0) {
+        lhs = t2;
+        rhs = t1;
+    } else {
+        return; // Trivial rule t -> t, ignore.
+    }
+
+    rules[rule_count].lhs.len = lhs.len;
+    rules[rule_count].lhs.term = (int*)malloc(lhs.len * sizeof(int));
+    memcpy(rules[rule_count].lhs.term, lhs.term, lhs.len * sizeof(int));
+
+    rules[rule_count].rhs.len = rhs.len;
+    rules[rule_count].rhs.term = (int*)malloc(rhs.len * sizeof(int));
+    memcpy(rules[rule_count].rhs.term, rhs.term, rhs.len * sizeof(int));
+
+    rule_count++;
+}
+
+// Normalizes a term by repeatedly applying rules from the system.
+// Returns a new, normalized term. Caller must free the returned term's data.
+static Term normalize(Term t) {
+    Term current_term;
+    current_term.len = t.len;
+    current_term.term = (int*)malloc(t.len * sizeof(int));
+    memcpy(current_term.term, t.term, t.len * sizeof(int));
+
+    bool changed;
+    do {
+        changed = false;
+        for (int i = 0; i < rule_count; ++i) {
+            Term lhs = rules[i].lhs;
+            if (lhs.len > current_term.len) continue;
+
+            for (int j = 0; j <= current_term.len - lhs.len; ++j) {
+                if (memcmp(current_term.term + j, lhs.term, lhs.len * sizeof(int)) == 0) {
+                    Term rhs = rules[i].rhs;
+                    int new_len = current_term.len - lhs.len + rhs.len;
+                    if (new_len > MAX_TERM_LENGTH * 4) continue; // Safety break for term growth
+
+                    int* new_data = (int*)malloc(new_len * sizeof(int));
+                    memcpy(new_data, current_term.term, j * sizeof(int));
+                    memcpy(new_data + j, rhs.term, rhs.len * sizeof(int));
+                    memcpy(new_data + j + rhs.len, current_term.term + j + lhs.len, (current_term.len - (j + lhs.len)) * sizeof(int));
+
+                    free(current_term.term);
+                    current_term.term = new_data;
+                    current_term.len = new_len;
+                    changed = true;
+                    goto next_normalization_pass; // Restart scan with the modified term
+                }
+            }
+        }
+    next_normalization_pass:;
+    } while (changed);
+
+    return current_term;
+}
+
+
+// --- BENCHMARK LIFECYCLE FUNCTIONS ---
+
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s <num_initial_rules> <max_term_length> <seed>\n", argv[0]);
+        exit(1);
+    }
+
+    NUM_INITIAL_RULES = atoi(argv[1]);
+    MAX_TERM_LENGTH = atoi(argv[2]);
+    SEED = (uint32_t)atoi(argv[3]);
+
+    mt_seed(SEED);
+
+    rule_capacity = NUM_INITIAL_RULES * 5; // Allow space for new rules
+    rules = (Rule*)malloc(rule_capacity * sizeof(Rule));
+    rule_count = 0;
+
+    for (int i = 0; i < NUM_INITIAL_RULES; i++) {
+        Term t1, t2;
+        t1.len = (mt_rand() % (MAX_TERM_LENGTH - 2)) + 2;
+        t2.len = (mt_rand() % (MAX_TERM_LENGTH - 2)) + 2;
+        t1.term = (int*)malloc(t1.len * sizeof(int));
+        t2.term = (int*)malloc(t2.len * sizeof(int));
+
+        for(int k=0; k<t1.len; ++k) t1.term[k] = mt_rand() % 100 + 1;
+        for(int k=0; k<t2.len; ++k) t2.term[k] = mt_rand() % 100 + 1;
+        
+        // Add the rule, which also orients it.
+        add_rule(t1, t2);
+
+        free(t1.term);
+        free(t2.term);
+    }
+}
+
+void run_computation() {
+    int initial_rules_to_process = rule_count;
+
+    // Create critical pairs from all combinations of initial rules.
+    for (int i = 0; i < initial_rules_to_process; i++) {
+        for (int j = 0; j < initial_rules_to_process; j++) {
+            if (rule_count >= rule_capacity) goto end_loops;
+
+            Term l1 = rules[i].lhs;
+            Term r1 = rules[i].rhs;
+            Term l2 = rules[j].lhs;
+            Term r2 = rules[j].rhs;
+
+            // Find overlaps: subterms of l1 that match l2.
+            // This is a simplified critical pair search.
+            for (int k = 0; k < l1.len - l2.len + 1; k++) {
+                if (memcmp(l1.term + k, l2.term, l2.len * sizeof(int)) == 0) {
+                    // Overlap found. Form the critical pair (C1, C2).
+                    // C1 is r1 substituted into the full l1.
+                    // C2 is l1 with the subterm l2 replaced by r2.
+                    int new_term_len = l1.len - l2.len + r2.len;
+                    if (new_term_len > MAX_TERM_LENGTH * 4) continue;
+
+                    int* new_term_data = (int*)malloc(new_term_len * sizeof(int));
+                    memcpy(new_term_data, l1.term, k * sizeof(int));
+                    memcpy(new_term_data + k, r2.term, r2.len * sizeof(int));
+                    memcpy(new_term_data + k + r2.len, l1.term + k + l2.len, (l1.len - (k + l2.len)) * sizeof(int));
+                    
+                    Term c1 = r1; // View, no new allocation needed
+                    Term c2 = { .term = new_term_data, .len = new_term_len };
+
+                    Term norm_c1 = normalize(c1);
+                    Term norm_c2 = normalize(c2);
+
+                    add_rule(norm_c1, norm_c2);
+
+                    free(c2.term);
+                    free(norm_c1.term);
+                    free(norm_c2.term);
+                }
+            }
+        }
+    }
+end_loops:
+
+    // Accumulate a result to prevent dead code elimination
+    long long sum = 0;
+    for (int i = 0; i < rule_count; i++) {
+        for (int j = 0; j < rules[i].lhs.len; j++) {
+            sum += rules[i].lhs.term[j];
+        }
+        for (int j = 0; j < rules[i].rhs.len; j++) {
+            sum -= rules[i].rhs.term[j];
+        }
+    }
+    final_result = sum;
+}
+
+void cleanup() {
+    for (int i = 0; i < rule_count; i++) {
+        free(rules[i].lhs.term);
+        free(rules[i].rhs.term);
+    }
+    free(rules);
+}
+
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    // Print final result to stdout
+    printf("%lld\n", final_result);
+
+    // Print time to stderr
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

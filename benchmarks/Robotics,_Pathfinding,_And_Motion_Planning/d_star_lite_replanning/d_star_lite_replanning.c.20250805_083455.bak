@@ -1,0 +1,388 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+#include <math.h>
+#include <float.h>
+
+// --- START MERSENNE TWISTER (DO NOT MODIFY) ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+                fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+                exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+// --- END MERSENNE TWISTER ---
+
+// --- BENCHMARK DATA STRUCTURES ---
+typedef struct Node_t {
+    int x, y;
+    double g;           // Cost from start
+    double rhs;         // One-step lookahead cost
+    double key[2];      // Priority key for the priority queue
+    double terrain_cost; // Cost of traversing this node
+    int pq_idx;         // Index in priority queue heap array, -1 if not in PQ
+} Node;
+
+typedef struct {
+    int x, y;
+    double new_cost;
+} Update;
+
+// --- GLOBAL BENCHMARK STATE ---
+static int GRID_WIDTH;
+static int GRID_HEIGHT;
+static int NUM_COST_UPDATES;
+
+static Node** grid;         // 2D grid of nodes
+static Node* start_node;
+static Node* goal_node;
+static double k_m;          // Key modifier for replanning
+
+static Update* cost_updates;  // Pre-calculated cost updates
+static long long final_result; // Accumulated result to prevent dead-code elimination
+
+// Priority Queue (min-heap implementation)
+static Node** U_pq;           // Array of Node pointers (the heap)
+static int pq_size;
+static int pq_capacity;
+
+// --- D* LITE HELPER PROTOTYPES ---
+void update_vertex(Node* u);
+void compute_shortest_path();
+void calculate_key(Node* u, double* key_out);
+
+// --- PRIORITY QUEUE IMPLEMENTATION ---
+void pq_swap(int i, int j) {
+    Node* temp = U_pq[i];
+    U_pq[i] = U_pq[j];
+    U_pq[j] = temp;
+    U_pq[i]->pq_idx = i;
+    U_pq[j]->pq_idx = j;
+}
+
+int compare_keys(double k1[2], double k2[2]) {
+    if (k1[0] < k2[0] - 1e-9) return -1;
+    if (k1[0] > k2[0] + 1e-9) return 1;
+    if (k1[1] < k2[1] - 1e-9) return -1;
+    if (k1[1] > k2[1] + 1e-9) return 1;
+    return 0;
+}
+
+void pq_percolate_up(int i) {
+    while (i > 0 && compare_keys(U_pq[i]->key, U_pq[(i - 1) / 2]->key) < 0) {
+        pq_swap(i, (i - 1) / 2);
+        i = (i - 1) / 2;
+    }
+}
+
+void pq_percolate_down(int i) {
+    int min_child = i;
+    int left = 2 * i + 1;
+    int right = 2 * i + 2;
+
+    if (left < pq_size && compare_keys(U_pq[left]->key, U_pq[min_child]->key) < 0) {
+        min_child = left;
+    }
+    if (right < pq_size && compare_keys(U_pq[right]->key, U_pq[min_child]->key) < 0) {
+        min_child = right;
+    }
+
+    if (min_child != i) {
+        pq_swap(i, min_child);
+        pq_percolate_down(min_child);
+    }
+}
+
+void pq_insert(Node* n) {
+    if (pq_size >= pq_capacity) return; // Should not happen with proper allocation
+    if (n->pq_idx != -1) return; // Already in queue
+    pq_size++;
+    U_pq[pq_size - 1] = n;
+    n->pq_idx = pq_size - 1;
+    pq_percolate_up(n->pq_idx);
+}
+
+Node* pq_top() {
+    return (pq_size > 0) ? U_pq[0] : NULL;
+}
+
+void pq_pop() {
+    if (pq_size == 0) return;
+    U_pq[0]->pq_idx = -1; // Mark as removed
+    U_pq[0] = U_pq[pq_size - 1];
+    U_pq[0]->pq_idx = 0;
+    pq_size--;
+    if (pq_size > 0) {
+        pq_percolate_down(0);
+    }
+}
+
+void pq_update(Node* n) {
+    if (n->pq_idx == -1) {
+        pq_insert(n);
+    } else {
+        pq_percolate_up(n->pq_idx); // Key can only decrease or stay the same in D* update logic
+    }
+}
+
+void pq_remove(Node* n) {
+    if (n->pq_idx == -1 || pq_size == 0) return;
+    int idx = n->pq_idx;
+    n->pq_idx = -1;
+    if (idx == pq_size - 1) {
+        pq_size--;
+        return;
+    }
+    pq_swap(idx, pq_size - 1);
+    pq_size--;
+    pq_percolate_down(idx);
+    pq_percolate_up(idx);
+}
+
+// --- D* LITE IMPLEMENTATION ---
+double heuristic(Node* a, Node* b) {
+    return sqrt(pow(a->x - b->x, 2) + pow(a->y - b->y, 2));
+}
+
+void calculate_key(Node* u, double* key_out) {
+    double min_g_rhs = (u->g < u->rhs) ? u->g : u->rhs;
+    key_out[0] = min_g_rhs + heuristic(start_node, u) + k_m;
+    key_out[1] = min_g_rhs;
+}
+
+Node* get_node(int x, int y) {
+    if (x >= 0 && x < GRID_WIDTH && y >= 0 && y < GRID_HEIGHT) {
+        return &grid[y][x];
+    }
+    return NULL;
+}
+
+double cost(Node* u, Node* v) {
+    int dx = abs(u->x - v->x);
+    int dy = abs(u->y - v->y);
+    double move_cost = (dx + dy > 1) ? M_SQRT2 : 1.0;
+    return move_cost + v->terrain_cost;
+}
+
+void update_vertex(Node* u) {
+    if (u != goal_node) {
+        double min_rhs = DBL_MAX;
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                if (dx == 0 && dy == 0) continue;
+                Node* succ = get_node(u->x + dx, u->y + dy);
+                if (succ) {
+                    double val = cost(u, succ) + succ->g;
+                    if (val < min_rhs) {
+                        min_rhs = val;
+                    }
+                }
+            }
+        }
+        u->rhs = min_rhs;
+    }
+    if (u->pq_idx != -1) {
+        pq_remove(u);
+    }
+    if (fabs(u->g - u->rhs) > 1e-9) {
+        calculate_key(u, u->key);
+        pq_insert(u);
+    }
+}
+
+
+void compute_shortest_path() {
+    double start_key[2];
+    calculate_key(start_node, start_key);
+
+    while (pq_size > 0 && (compare_keys(pq_top()->key, start_key) < 0 || start_node->rhs != start_node->g)) {
+        Node* u = pq_top();
+        double k_old[2];
+        k_old[0] = u->key[0];
+        k_old[1] = u->key[1];
+        pq_pop();
+
+        double k_new[2];
+        calculate_key(u, k_new);
+
+        if (compare_keys(k_old, k_new) < 0) {
+            u->key[0] = k_new[0];
+            u->key[1] = k_new[1];
+            pq_insert(u);
+        } else if (u->g > u->rhs) {
+            u->g = u->rhs;
+            for (int dx = -1; dx <= 1; ++dx) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    if (dx == 0 && dy == 0) continue;
+                    Node* pred = get_node(u->x + dx, u->y + dy);
+                    if (pred) update_vertex(pred);
+                }
+            }
+        } else {
+            u->g = DBL_MAX;
+            update_vertex(u);
+            for (int dx = -1; dx <= 1; ++dx) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    if (dx == 0 && dy == 0) continue;
+                    Node* pred = get_node(u->x + dx, u->y + dy);
+                    if (pred) update_vertex(pred);
+                }
+            }
+        }
+        calculate_key(start_node, start_key);
+    }
+}
+
+// --- BENCHMARK FUNCTIONS ---
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 5) {
+        fprintf(stderr, "Usage: %s grid_width grid_height num_cost_updates seed\n", argv[0]);
+        exit(1);
+    }
+
+    GRID_WIDTH = atoi(argv[1]);
+    GRID_HEIGHT = atoi(argv[2]);
+    NUM_COST_UPDATES = atoi(argv[3]);
+    uint32_t seed = (uint32_t)atoi(argv[4]);
+    mt_seed(seed);
+
+    // Allocate grid
+    grid = (Node**)malloc(GRID_HEIGHT * sizeof(Node*));
+    for (int i = 0; i < GRID_HEIGHT; ++i) {
+        grid[i] = (Node*)malloc(GRID_WIDTH * sizeof(Node));
+    }
+
+    // Allocate PQ
+    pq_capacity = GRID_WIDTH * GRID_HEIGHT;
+    U_pq = (Node**)malloc(pq_capacity * sizeof(Node*));
+    pq_size = 0;
+
+    // Initialize nodes
+    for (int y = 0; y < GRID_HEIGHT; ++y) {
+        for (int x = 0; x < GRID_WIDTH; ++x) {
+            grid[y][x].x = x;
+            grid[y][x].y = y;
+            grid[y][x].g = DBL_MAX;
+            grid[y][x].rhs = DBL_MAX;
+            grid[y][x].terrain_cost = (double)(mt_rand() % 100) / 20.0;
+            grid[y][x].pq_idx = -1;
+        }
+    }
+
+    start_node = &grid[0][0];
+    goal_node = &grid[GRID_HEIGHT - 1][GRID_WIDTH - 1];
+
+    // Initialize D* Lite
+    k_m = 0.0;
+    goal_node->rhs = 0.0;
+    calculate_key(goal_node, goal_node->key);
+    pq_insert(goal_node);
+
+    // Pre-generate cost updates
+    cost_updates = (Update*)malloc(NUM_COST_UPDATES * sizeof(Update));
+    for (int i = 0; i < NUM_COST_UPDATES; ++i) {
+        cost_updates[i].x = mt_rand() % GRID_WIDTH;
+        cost_updates[i].y = mt_rand() % GRID_HEIGHT;
+        cost_updates[i].new_cost = (double)(mt_rand() % 100) / 20.0;
+    }
+
+    final_result = 0;
+}
+
+void run_computation() {
+    // 1. Initial path computation
+    compute_shortest_path();
+    if (start_node->g < DBL_MAX) {
+        final_result += (long long)start_node->g;
+    }
+
+    // 2. Simulate environment changes and replan
+    for (int i = 0; i < NUM_COST_UPDATES; ++i) {
+        int x = cost_updates[i].x;
+        int y = cost_updates[i].y;
+        double new_cost = cost_updates[i].new_cost;
+
+        Node* changed_node = &grid[y][x];
+
+        // The robot would move, so update k_m
+        // Simplified: k_m isn't updated, as we replan from a static start
+        // k_m += heuristic(last, start); where last is prev robot pos
+
+        // Update the cost
+        changed_node->terrain_cost = new_cost;
+_        
+        // Propagate the cost change
+        update_vertex(changed_node);
+
+        // Replan
+        compute_shortest_path();
+        
+        // Accumulate result
+        if (start_node->g < DBL_MAX) {
+            final_result += (long long)start_node->g;
+        }
+    }
+}
+
+void cleanup() {
+    for (int i = 0; i < GRID_HEIGHT; ++i) {
+        free(grid[i]);
+    }
+    free(grid);
+    free(U_pq);
+    free(cost_updates);
+}
+
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    printf("%lld\n", final_result);
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

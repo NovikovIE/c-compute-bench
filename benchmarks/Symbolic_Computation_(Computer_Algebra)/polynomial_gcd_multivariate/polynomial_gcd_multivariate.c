@@ -1,0 +1,349 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <stdint.h>
+
+// --- Mersenne Twister (MT19937) Generator ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+             fprintf(stderr, "FATAL: Mersenne Twister not seeded.");
+             exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+
+// --- Data Structures ---
+
+typedef struct {
+    long long coeff;
+    int* exponents;
+} Term;
+
+typedef struct {
+    Term* terms;
+    int num_terms;
+    int capacity;
+    int num_vars;
+} Polynomial;
+
+// --- Global Data ---
+
+typedef struct {
+    int num_variables;
+    int max_degree;
+    int num_terms1;
+    int num_terms2;
+    uint32_t seed;
+    Polynomial* p1;
+    Polynomial* p2;
+    long long final_result;
+} BenchmarkData;
+
+BenchmarkData g_data;
+
+// --- Polynomial Helper Functions ---
+
+// Lexicographical comparison for sorting terms (highest degree first)
+int term_compare(const void* a, const void* b) {
+    Term* termA = (Term*)a;
+    Term* termB = (Term*)b;
+    for (int i = 0; i < g_data.num_variables; ++i) {
+        if (termA->exponents[i] > termB->exponents[i]) return -1;
+        if (termA->exponents[i] < termB->exponents[i]) return 1;
+    }
+    return 0;
+}
+
+Polynomial* poly_create(int num_vars, int capacity) {
+    Polynomial* p = (Polynomial*)malloc(sizeof(Polynomial));
+    if (!p) { perror("malloc failed"); exit(1); }
+    p->num_vars = num_vars;
+    p->capacity = capacity;
+    p->num_terms = 0;
+    p->terms = (Term*)malloc(capacity * sizeof(Term));
+    if (!p->terms) { perror("malloc failed"); exit(1); }
+    for (int i = 0; i < capacity; ++i) {
+        p->terms[i].exponents = (int*)malloc(num_vars * sizeof(int));
+        if (!p->terms[i].exponents) { perror("malloc failed"); exit(1); }
+    }
+    return p;
+}
+
+void poly_destroy(Polynomial* p) {
+    if (!p) return;
+    for (int i = 0; i < p->capacity; ++i) {
+        free(p->terms[i].exponents);
+    }
+    free(p->terms);
+    free(p);
+}
+
+void poly_add_term_unsafe(Polynomial* p, const Term* t) {
+    p->terms[p->num_terms].coeff = t->coeff;
+    memcpy(p->terms[p->num_terms].exponents, t->exponents, p->num_vars * sizeof(int));
+    p->num_terms++;
+}
+
+void poly_sort_and_combine(Polynomial* p) {
+    if (p->num_terms <= 1) return;
+    
+    qsort(p->terms, p->num_terms, sizeof(Term), term_compare);
+
+    int write_idx = 0;
+    for (int read_idx = 1; read_idx < p->num_terms; ++read_idx) {
+        if (term_compare(&p->terms[write_idx], &p->terms[read_idx]) == 0) {
+            p->terms[write_idx].coeff += p->terms[read_idx].coeff;
+        } else {
+            write_idx++;
+            if (write_idx != read_idx) {
+                p->terms[write_idx].coeff = p->terms[read_idx].coeff;
+                memcpy(p->terms[write_idx].exponents, p->terms[read_idx].exponents, p->num_vars * sizeof(int));
+            }
+        }
+    }
+    
+    int final_idx = 0;
+    for(int i = 0; i <= write_idx; ++i) {
+       if (p->terms[i].coeff != 0) {
+           if (final_idx != i) {
+               p->terms[final_idx].coeff = p->terms[i].coeff;
+               memcpy(p->terms[final_idx].exponents, p->terms[i].exponents, p->num_vars * sizeof(int));
+           }
+           final_idx++;
+       }
+    }
+    p->num_terms = final_idx;
+}
+
+Polynomial* poly_copy(const Polynomial* p) {
+    int cap = p->capacity > p->num_terms ? p->capacity : p->num_terms;
+    if (cap == 0) cap = 1; // handle empty polys
+    Polynomial* new_p = poly_create(p->num_vars, cap);
+    new_p->num_terms = p->num_terms;
+    for (int i = 0; i < p->num_terms; ++i) {
+        new_p->terms[i].coeff = p->terms[i].coeff;
+        memcpy(new_p->terms[i].exponents, p->terms[i].exponents, p->num_vars * sizeof(int));
+    }
+    return new_p;
+}
+
+Polynomial* poly_subtract(const Polynomial* a, const Polynomial* b) {
+    Polynomial* c = poly_create(a->num_vars, a->num_terms + b->num_terms + 1);
+    int i = 0, j = 0;
+    while (i < a->num_terms && j < b->num_terms) {
+        int cmp = term_compare(&a->terms[i], &b->terms[j]);
+        if (cmp == 0) {
+            long long new_coeff = a->terms[i].coeff - b->terms[j].coeff;
+            if (new_coeff != 0) {
+                c->terms[c->num_terms].coeff = new_coeff;
+                memcpy(c->terms[c->num_terms].exponents, a->terms[i].exponents, c->num_vars * sizeof(int));
+                c->num_terms++;
+            }
+            i++; j++;
+        } else if (cmp < 0) {
+            poly_add_term_unsafe(c, &a->terms[i]);
+            i++;
+        } else {
+            c->terms[c->num_terms].coeff = -b->terms[j].coeff;
+            memcpy(c->terms[c->num_terms].exponents, b->terms[j].exponents, c->num_vars * sizeof(int));
+            c->num_terms++;
+            j++;
+        }
+    }
+    while (i < a->num_terms) { poly_add_term_unsafe(c, &a->terms[i]); i++; }
+    while (j < b->num_terms) {
+        c->terms[c->num_terms].coeff = -b->terms[j].coeff;
+        memcpy(c->terms[c->num_terms].exponents, b->terms[j].exponents, c->num_vars * sizeof(int));
+        c->num_terms++;
+        j++;
+    }
+    return c;
+}
+
+Polynomial* poly_multiply_by_coeff(const Polynomial* p, long long coeff) {
+    Polynomial* result = poly_copy(p);
+    for (int i = 0; i < result->num_terms; ++i) {
+        result->terms[i].coeff *= coeff;
+    }
+    return result;
+}
+
+Polynomial* poly_multiply_by_term(const Polynomial* p, const Term* t) {
+    Polynomial* result = poly_copy(p);
+    for (int i = 0; i < result->num_terms; ++i) {
+        result->terms[i].coeff *= t->coeff;
+        for (int v = 0; v < p->num_vars; ++v) {
+            result->terms[i].exponents[v] += t->exponents[v];
+        }
+    }
+    return result;
+}
+
+// --- Benchmark Functions ---
+
+void setup_benchmark(int argc, char* argv[]) {
+    if (argc != 6) {
+        fprintf(stderr, "Usage: %s num_variables max_degree num_terms1 num_terms2 seed\n", argv[0]);
+        exit(1);
+    }
+    g_data.num_variables = atoi(argv[1]);
+    g_data.max_degree = atoi(argv[2]);
+    g_data.num_terms1 = atoi(argv[3]);
+    g_data.num_terms2 = atoi(argv[4]);
+    g_data.seed = (uint32_t)atoi(argv[5]);
+
+    mt_seed(g_data.seed);
+
+    g_data.p1 = poly_create(g_data.num_variables, g_data.num_terms1);
+    g_data.p2 = poly_create(g_data.num_variables, g_data.num_terms2);
+    
+    Polynomial* polys[2] = { g_data.p1, g_data.p2 };
+    int num_terms_arr[2] = { g_data.num_terms1, g_data.num_terms2 };
+
+    for(int p_idx = 0; p_idx < 2; ++p_idx) {
+        Polynomial* p = polys[p_idx];
+        int num_terms = num_terms_arr[p_idx];
+        Term t;
+        t.exponents = (int*)malloc(g_data.num_variables * sizeof(int));
+        for (int i = 0; i < num_terms; ++i) {
+            t.coeff = (mt_rand() % 10) - 5;
+            if (t.coeff == 0) t.coeff = 1;
+            
+            for (int j = 0; j < g_data.num_variables; ++j) {
+                t.exponents[j] = mt_rand() % (g_data.max_degree + 1);
+            }
+            poly_add_term_unsafe(p, &t);
+        }
+        free(t.exponents);
+        poly_sort_and_combine(p);
+    }
+}
+
+void run_computation() {
+    Polynomial* a = poly_copy(g_data.p1);
+    Polynomial* b = poly_copy(g_data.p2);
+
+    int max_iter = g_data.max_degree * g_data.num_variables + 20; // Safety break
+
+    for (int iter = 0; iter < max_iter && a->num_terms > 0 && b->num_terms > 0; ++iter) {
+        if (term_compare(&a->terms[0], &b->terms[0]) < 0) {
+            Polynomial* temp = a; a = b; b = temp;
+        }
+
+        Term* lt_a = &a->terms[0];
+        Term* lt_b = &b->terms[0];
+        
+        Term t_shift;
+        t_shift.exponents = (int*)malloc(a->num_vars * sizeof(int));
+        t_shift.coeff = 1;
+        int is_zero_shift = 1;
+        for(int i = 0; i < a->num_vars; ++i) {
+            int diff = lt_a->exponents[i] - lt_b->exponents[i];
+            if (diff < 0) { // Should not happen due to sort and swap
+                is_zero_shift = 0; // stop, something is wrong
+                break;
+            }
+            t_shift.exponents[i] = diff;
+            if (diff != 0) is_zero_shift = 0;
+        }
+        if (!is_zero_shift) {
+             t_shift.coeff = lt_a->coeff;
+        }
+
+        Polynomial* b_shifted = poly_multiply_by_term(b, &t_shift);
+        free(t_shift.exponents);
+
+        Polynomial* a_scaled = poly_multiply_by_coeff(a, lt_b->coeff);
+        
+        Polynomial* remainder = poly_subtract(a_scaled, b_shifted);
+        
+        poly_destroy(b_shifted);
+        poly_destroy(a_scaled);
+        
+        poly_sort_and_combine(remainder);
+        
+        // The Euclidean algorithm state transition is (a, b) -> (b, remainder).
+        // The old 'a' is no longer needed and must be freed.
+        poly_destroy(a);
+        
+        // The old 'b' becomes the new 'a' (the new dividend).
+        a = b;
+        
+        // The 'remainder' becomes the new 'b' (the new divisor).
+        b = remainder;
+    }
+    
+    Polynomial* gcd = (a->num_terms == 0) ? b : a;
+
+    long long checksum = 0;
+    if (gcd) {
+        for(int i = 0; i < gcd->num_terms; ++i) {
+            checksum += gcd->terms[i].coeff;
+            for(int j = 0; j< gcd->num_vars; ++j) {
+                checksum += gcd->terms[i].exponents[j];
+            }
+        }
+    }
+    g_data.final_result = checksum;
+
+    poly_destroy(a);
+    poly_destroy(b);
+}
+
+void cleanup() {
+    poly_destroy(g_data.p1);
+    poly_destroy(g_data.p2);
+}
+
+int main(int argc, char* argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+    
+    printf("%lld\n", g_data.final_result);
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

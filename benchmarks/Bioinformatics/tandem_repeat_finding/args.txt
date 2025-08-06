@@ -1,0 +1,1 @@
+sequence_length,max_pattern_size,seed

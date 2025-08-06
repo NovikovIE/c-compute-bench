@@ -1,0 +1,337 @@
+/*
+ * Benchmark: Tabu Search for Vehicle Routing Problem (VRP)
+ * 
+ * Description: This program implements a Tabu Search metaheuristic to solve the
+ * Capacitated Vehicle Routing Problem (CVRP). The goal is to find the optimal set of routes 
+ * for a fleet of vehicles to serve a number of customers, minimizing the total distance 
+ * traveled. The problem is NP-hard, making heuristics like Tabu Search essential for 
+ * finding good solutions in a reasonable amount of time.
+ *
+ * The benchmark creates a VRP instance with a depot and a set of customers at random
+ * 2D locations. It then runs a Tabu Search algorithm for a specified number of iterations.
+ * The core of the computation is the neighborhood exploration, where the algorithm evaluates
+ * moving each customer to every possible new position in the solution to find the best move.
+ * A tabu list is maintained to prevent reversing recent moves, helping the search escape
+ * local optima.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
+#include <math.h>
+#include <float.h>
+#include <string.h>
+
+// --- Mersenne Twister (Do Not Modify - Verbatim) ---
+#define MT_N 624
+#define MT_M 397
+#define MT_MATRIX_A 0x9908b0dfUL
+#define MT_UPPER_MASK 0x80000000UL
+#define MT_LOWER_MASK 0x7fffffffUL
+
+static uint32_t mt[MT_N];
+static int mt_index = MT_N + 1;
+
+void mt_seed(uint32_t seed) {
+    mt[0] = seed;
+    for (mt_index = 1; mt_index < MT_N; mt_index++) {
+        mt[mt_index] = (1812433253UL * (mt[mt_index - 1] ^ (mt[mt_index - 1] >> 30)) + mt_index);
+    }
+}
+
+uint32_t mt_rand(void) {
+    uint32_t y;
+    static const uint32_t mag01[2] = {0x0UL, MT_MATRIX_A};
+    if (mt_index >= MT_N) {
+        if (mt_index > MT_N) {
+                fprintf(stderr, "FATAL: Mersenne Twister not seeded.\n");
+                exit(1);
+        }
+        for (int i = 0; i < MT_N - MT_M; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + MT_M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        for (int i = MT_N - MT_M; i < MT_N - 1; i++) {
+            y = (mt[i] & MT_UPPER_MASK) | (mt[i + 1] & MT_LOWER_MASK);
+            mt[i] = mt[i + (MT_M - MT_N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        }
+        y = (mt[MT_N - 1] & MT_UPPER_MASK) | (mt[0] & MT_LOWER_MASK);
+        mt[MT_N - 1] = mt[MT_M - 1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+        mt_index = 0;
+    }
+    y = mt[mt_index++];
+    y ^= (y >> 11); y ^= (y << 7) & 0x9d2c5680UL; y ^= (y << 15) & 0xefc60000UL; y ^= (y >> 18);
+    return y;
+}
+// --- End Mersenne Twister ---
+
+// --- Benchmark Structures and Globals ---
+typedef struct {
+    int x;
+    int y;
+} Point;
+
+struct {
+    // Parameters
+    int num_customers;
+    int num_vehicles;
+    int num_iterations;
+    int tabu_tenure;
+
+    // Problem Data: +1 for the depot at index 0
+    Point* locations;
+    double** dist_matrix;
+
+    // Current Solution
+    int** current_routes;
+    int* current_route_lengths;
+
+    // Tabu Search Data
+    int* tabu_list; // tabu_list[customer_id] = iterations forbidden
+
+    // Best solution found
+    int** best_routes;
+    int* best_route_lengths;
+    double best_cost;
+
+    // Final result to prevent dead code elimination
+    double final_result;
+
+} benchmark_data;
+
+// --- Function Prototypes ---
+void setup_benchmark(int argc, char *argv[]);
+void run_computation();
+void cleanup();
+double calculate_total_cost(int** routes, int* route_lengths);
+void copy_solution(int** dest_routes, int* dest_lengths, int** src_routes, int* src_lengths);
+
+// --- Benchmark Implementation ---
+void setup_benchmark(int argc, char *argv[]) {
+    if (argc != 6) {
+        fprintf(stderr, "Usage: %s <num_customers> <num_vehicles> <num_iterations> <tabu_list_size> <seed>\n", argv[0]);
+        exit(1);
+    }
+
+    benchmark_data.num_customers = atoi(argv[1]);
+    benchmark_data.num_vehicles = atoi(argv[2]);
+    benchmark_data.num_iterations = atoi(argv[3]);
+    benchmark_data.tabu_tenure = atoi(argv[4]);
+    uint32_t seed = (uint32_t)strtoul(argv[5], NULL, 10);
+    mt_seed(seed);
+
+    int num_locations = benchmark_data.num_customers + 1; // +1 for depot
+
+    // Allocate memory
+    benchmark_data.locations = (Point*)malloc(num_locations * sizeof(Point));
+    benchmark_data.dist_matrix = (double**)malloc(num_locations * sizeof(double*));
+    for (int i = 0; i < num_locations; i++) {
+        benchmark_data.dist_matrix[i] = (double*)malloc(num_locations * sizeof(double));
+    }
+
+    // Generate random locations (depot at a fixed point)
+    benchmark_data.locations[0] = (Point){500, 500};
+    for (int i = 1; i < num_locations; i++) {
+        benchmark_data.locations[i] = (Point){(int)(mt_rand() % 1000), (int)(mt_rand() % 1000)};
+    }
+
+    // Pre-calculate distance matrix (Euclidean distance)
+    for (int i = 0; i < num_locations; i++) {
+        for (int j = i; j < num_locations; j++) {
+            if (i == j) {
+                benchmark_data.dist_matrix[i][j] = 0;
+            } else {
+                double dx = benchmark_data.locations[i].x - benchmark_data.locations[j].x;
+                double dy = benchmark_data.locations[i].y - benchmark_data.locations[j].y;
+                double dist = sqrt(dx * dx + dy * dy);
+                benchmark_data.dist_matrix[i][j] = dist;
+                benchmark_data.dist_matrix[j][i] = dist;
+            }
+        }
+    }
+
+    // Allocate solution structures
+    benchmark_data.current_routes = (int**)malloc(benchmark_data.num_vehicles * sizeof(int*));
+    benchmark_data.current_route_lengths = (int*)calloc(benchmark_data.num_vehicles, sizeof(int));
+    benchmark_data.best_routes = (int**)malloc(benchmark_data.num_vehicles * sizeof(int*));
+    benchmark_data.best_route_lengths = (int*)calloc(benchmark_data.num_vehicles, sizeof(int));
+
+    for (int i = 0; i < benchmark_data.num_vehicles; i++) {
+        // BUG: The original allocation size was `num_customers`. If a route becomes full (contains all customers),
+        // the `memmove` operation in `run_computation` to insert a new customer would write one element past the
+        // end of the allocated buffer, causing a segmentation fault.
+        // FIX: Allocate one extra slot to accommodate the insertion logic safely.
+        benchmark_data.current_routes[i] = (int*)malloc((benchmark_data.num_customers + 1) * sizeof(int));
+        benchmark_data.best_routes[i] = (int*)malloc((benchmark_data.num_customers + 1) * sizeof(int));
+    }
+    
+    benchmark_data.tabu_list = (int*)calloc(num_locations, sizeof(int));
+    
+    // Generate simple initial solution (round-robin assignment)
+    for (int i = 0; i < benchmark_data.num_customers; i++) {
+        int customer_id = i + 1;
+        int vehicle_idx = i % benchmark_data.num_vehicles;
+        benchmark_data.current_routes[vehicle_idx][benchmark_data.current_route_lengths[vehicle_idx]++] = customer_id;
+    }
+
+    benchmark_data.best_cost = calculate_total_cost(benchmark_data.current_routes, benchmark_data.current_route_lengths);
+    copy_solution(benchmark_data.best_routes, benchmark_data.best_route_lengths, benchmark_data.current_routes, benchmark_data.current_route_lengths);
+    benchmark_data.final_result = 0.0;
+}
+
+void run_computation() {
+    double current_cost = benchmark_data.best_cost;
+
+    for (int iter = 0; iter < benchmark_data.num_iterations; iter++) {
+        double best_move_delta = DBL_MAX;
+        int best_move_cust = -1, best_move_from_v = -1, best_move_to_v = -1;
+        int best_move_from_pos = -1, best_move_to_pos = -1;
+        
+        // Decrement tabu tenures
+        for (int i = 1; i <= benchmark_data.num_customers; i++) {
+            if (benchmark_data.tabu_list[i] > 0) {
+                benchmark_data.tabu_list[i]--;
+            }
+        }
+
+        // Explore neighborhood: Relocate a customer
+        // Find the best move by iterating over every customer and every possible new position
+        for (int from_v = 0; from_v < benchmark_data.num_vehicles; from_v++) {
+            for (int from_pos = 0; from_pos < benchmark_data.current_route_lengths[from_v]; from_pos++) {
+                int cust_to_move = benchmark_data.current_routes[from_v][from_pos];
+                
+                int prev_node = (from_pos == 0) ? 0 : benchmark_data.current_routes[from_v][from_pos - 1];
+                int next_node = (from_pos == benchmark_data.current_route_lengths[from_v] - 1) ? 0 : benchmark_data.current_routes[from_v][from_pos + 1];
+                double removal_delta = benchmark_data.dist_matrix[prev_node][next_node] -
+                                       benchmark_data.dist_matrix[prev_node][cust_to_move] -
+                                       benchmark_data.dist_matrix[cust_to_move][next_node];
+
+                for (int to_v = 0; to_v < benchmark_data.num_vehicles; to_v++) {
+                    for (int to_pos = 0; to_pos <= benchmark_data.current_route_lengths[to_v]; to_pos++) {
+                        if (from_v == to_v && (to_pos == from_pos || to_pos == from_pos + 1)) continue;
+
+                        int insert_prev = (to_pos == 0) ? 0 : benchmark_data.current_routes[to_v][to_pos - 1];
+                        int insert_next = (to_pos == benchmark_data.current_route_lengths[to_v]) ? 0 : benchmark_data.current_routes[to_v][to_pos];
+                       
+                        double insertion_delta = benchmark_data.dist_matrix[insert_prev][cust_to_move] +
+                                                 benchmark_data.dist_matrix[cust_to_move][insert_next] -
+                                                 benchmark_data.dist_matrix[insert_prev][insert_next];
+                        
+                        double total_delta = removal_delta + insertion_delta;
+                        
+                        int is_tabu = (benchmark_data.tabu_list[cust_to_move] > 0);
+                        int aspiration_met = (current_cost + total_delta < benchmark_data.best_cost);
+
+                        if ((!is_tabu || aspiration_met) && total_delta < best_move_delta) {
+                            best_move_delta = total_delta;
+                            best_move_cust = cust_to_move;
+                            best_move_from_v = from_v; best_move_from_pos = from_pos;
+                            best_move_to_v = to_v; best_move_to_pos = to_pos;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply the best move found
+        if (best_move_cust != -1) {
+            int cust = best_move_cust, from_v = best_move_from_v, to_v = best_move_to_v;
+            int from_pos = best_move_from_pos, to_pos = best_move_to_pos;
+
+            // Remove from old route
+            memmove(&benchmark_data.current_routes[from_v][from_pos], &benchmark_data.current_routes[from_v][from_pos + 1], (benchmark_data.current_route_lengths[from_v] - from_pos - 1) * sizeof(int));
+            benchmark_data.current_route_lengths[from_v]--;
+
+            // Insert into new route
+            memmove(&benchmark_data.current_routes[to_v][to_pos + 1], &benchmark_data.current_routes[to_v][to_pos], (benchmark_data.current_route_lengths[to_v] - to_pos) * sizeof(int));
+            benchmark_data.current_routes[to_v][to_pos] = cust;
+            benchmark_data.current_route_lengths[to_v]++;
+
+            current_cost += best_move_delta;
+            benchmark_data.tabu_list[cust] = benchmark_data.tabu_tenure;
+            
+            if (current_cost < benchmark_data.best_cost) {
+                benchmark_data.best_cost = current_cost;
+                copy_solution(benchmark_data.best_routes, benchmark_data.best_route_lengths, benchmark_data.current_routes, benchmark_data.current_route_lengths);
+            }
+        }
+    }
+    
+    benchmark_data.final_result = benchmark_data.best_cost;
+}
+
+
+void cleanup() {
+    int num_locations = benchmark_data.num_customers + 1;
+
+    free(benchmark_data.locations);
+
+    for (int i = 0; i < num_locations; i++) {
+        free(benchmark_data.dist_matrix[i]);
+    }
+    free(benchmark_data.dist_matrix);
+
+    for (int i = 0; i < benchmark_data.num_vehicles; i++) {
+        free(benchmark_data.current_routes[i]);
+        free(benchmark_data.best_routes[i]);
+    }
+    free(benchmark_data.current_routes);
+    free(benchmark_data.best_routes);
+    free(benchmark_data.current_route_lengths);
+    free(benchmark_data.best_route_lengths);
+    free(benchmark_data.tabu_list);
+}
+
+
+// --- Helper Functions ---
+double calculate_total_cost(int** routes, int* route_lengths) {
+    double total_cost = 0;
+    for (int v = 0; v < benchmark_data.num_vehicles; v++) {
+        if (route_lengths[v] == 0) continue;
+        double route_cost = 0.0;
+        int prev_node = 0; // Depot
+        for (int i = 0; i < route_lengths[v]; i++) {
+            route_cost += benchmark_data.dist_matrix[prev_node][routes[v][i]];
+            prev_node = routes[v][i];
+        }
+        route_cost += benchmark_data.dist_matrix[prev_node][0]; // Return to depot
+        total_cost += route_cost;
+    }
+    return total_cost;
+}
+
+void copy_solution(int** dest_routes, int* dest_lengths, int** src_routes, int* src_lengths) {
+    memcpy(dest_lengths, src_lengths, benchmark_data.num_vehicles * sizeof(int));
+    for (int v = 0; v < benchmark_data.num_vehicles; v++) {
+        if (src_lengths[v] > 0) {
+           memcpy(dest_routes[v], src_routes[v], src_lengths[v] * sizeof(int));
+        }
+    }
+}
+
+
+// --- Main --- 
+int main(int argc, char *argv[]) {
+    struct timespec start, end;
+
+    setup_benchmark(argc, argv);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    run_computation();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    double final_result = benchmark_data.final_result;
+
+    cleanup();
+
+    double time_taken = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    // Print result to stdout
+    printf("%f\n", final_result);
+
+    // Print time to stderr
+    fprintf(stderr, "%.6f", time_taken);
+
+    return 0;
+}

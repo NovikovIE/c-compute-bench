@@ -59,7 +59,7 @@ float** output_batch;
 float*  output_batch_data;
 
 // Learnable parameters and buffers
-float* gamma;
+float* bn_gamma;
 float* beta;
 float* mean;
 float* variance;
@@ -108,12 +108,12 @@ void setup_benchmark(int argc, char *argv[]) {
     // Allocate memories
     input_batch = allocate_matrix(BATCH_SIZE, NUM_FEATURES, &input_batch_data);
     output_batch = allocate_matrix(BATCH_SIZE, NUM_FEATURES, &output_batch_data);
-    gamma = (float*)malloc(NUM_FEATURES * sizeof(float));
+    bn_gamma = (float*)malloc(NUM_FEATURES * sizeof(float));
     beta = (float*)malloc(NUM_FEATURES * sizeof(float));
     mean = (float*)malloc(NUM_FEATURES * sizeof(float));
     variance = (float*)malloc(NUM_FEATURES * sizeof(float));
 
-    if (!input_batch || !output_batch || !gamma || !beta || !mean || !variance) {
+    if (!input_batch || !output_batch || !bn_gamma || !beta || !mean || !variance) {
         fprintf(stderr, "FATAL: Memory allocation failed.\n");
         exit(1);
     }
@@ -126,7 +126,7 @@ void setup_benchmark(int argc, char *argv[]) {
     }
 
     for (int j = 0; j < NUM_FEATURES; ++j) {
-        gamma[j] = rand_float() + 0.5f;   // Scaling parameter, away from zero
+        bn_gamma[j] = rand_float() + 0.5f;   // Scaling parameter, away from zero
         beta[j] = rand_float() - 0.5f;    // Shifting parameter
     }
     
@@ -159,7 +159,7 @@ void run_computation() {
         float inv_stddev = 1.0f / sqrtf(variance[j] + EPSILON);
         for (int i = 0; i < BATCH_SIZE; ++i) {
             float normalized = (input_batch[i][j] - mean[j]) * inv_stddev;
-            output_batch[i][j] = normalized * gamma[j] + beta[j];
+            output_batch[i][j] = normalized * bn_gamma[j] + beta[j];
         }
     }
 
@@ -178,7 +178,7 @@ void cleanup() {
     free(input_batch);
     free(output_batch_data);
     free(output_batch);
-    free(gamma);
+    free(bn_gamma);
     free(beta);
     free(mean);
     free(variance);

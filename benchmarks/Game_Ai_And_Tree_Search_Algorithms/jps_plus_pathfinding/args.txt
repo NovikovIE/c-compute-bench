@@ -1,1 +1,0 @@
-grid_width,grid_height,obstacle_percentage,seed

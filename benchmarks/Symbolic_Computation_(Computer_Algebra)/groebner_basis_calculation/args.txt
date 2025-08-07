@@ -1,1 +1,0 @@
-num_polynomials,num_variables,max_degree,seed
